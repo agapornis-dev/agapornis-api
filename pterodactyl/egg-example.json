@@ -1,6 +1,6 @@
 {
   "meta": {
-    "version": "1.0",
+    "version": "0.1.0",
     "name": "agapornis-agent-egg",
     "description": "Example Pterodactyl egg to run Agapornis agent and provide webhook hooks"
   },
