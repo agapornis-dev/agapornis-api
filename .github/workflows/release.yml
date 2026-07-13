@@ -1,0 +1,57 @@
+name: Release API
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Validate release version
+        shell: bash
+        run: |
+          package_version=$(node -p "require('./package.json').version")
+          test "${GITHUB_REF_NAME}" = "v${package_version}"
+
+      - name: Verify API
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm run test:system-update
+          npm run test:agent-update-rules
+
+      - name: Package host-native source release
+        run: |
+          mkdir -p dist
+          git archive --format=tar.gz --output=dist/agapornis-api-source.tar.gz HEAD
+          sha256sum dist/agapornis-api-source.tar.gz > dist/agapornis-api-source.tar.gz.sha256
+
+      - name: Create release manifest
+        run: node .github/scripts/create-release-manifest.cjs
+        env:
+          RELEASE_ARTIFACT: dist/agapornis-api-source.tar.gz
+          RELEASE_MANIFEST: dist/release-manifest.json
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/agapornis-api-source.tar.gz
+            dist/agapornis-api-source.tar.gz.sha256
+            dist/release-manifest.json
+            deploy/agapornis-api.service
+            deploy/agapornis-panel-update.service
+            deploy/apply-native-update.sh

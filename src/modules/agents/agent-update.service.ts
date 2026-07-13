@@ -24,6 +24,8 @@ export class AgentUpdateService {
     const rows = await Promise.all(agents.map(async agent => {
       try {
         const data: any = await this.client.getUpdateStatus(agent.nodeId);
+        const restartRequired = Boolean(data?.restart_required ?? data?.restartRequired);
+        const pendingArtifact = String(data?.pending_artifact || data?.pendingArtifact || '').trim();
         return {
           ...agent,
           available: manifestConfigured || envArtifactUrlConfigured,
@@ -32,6 +34,7 @@ export class AgentUpdateService {
           updateAvailable: agentRelease?.version
             ? this.systemUpdates.compareReleaseVersions(agentRelease.version, data?.version || 'unknown') > 0
             : Boolean(envArtifactUrlConfigured),
+          canRestartUpdate: restartRequired && Boolean(pendingArtifact),
           status: data,
         };
       } catch (error: any) {
@@ -65,6 +68,20 @@ export class AgentUpdateService {
     }
     this.validateArtifact(artifactUrl, sha256);
     return this.client.applyUpdate(nodeId, { artifactUrl, sha256 });
+  }
+
+  async restart(nodeId: string) {
+    const status: any = await this.client.getUpdateStatus(nodeId);
+    const restartRequired = Boolean(status?.restart_required ?? status?.restartRequired);
+    const pendingArtifact = String(status?.pending_artifact || status?.pendingArtifact || '').trim();
+    if (!restartRequired || !pendingArtifact) {
+      throw new BadRequestException('agent restart is allowed only when a verified update is staged and restart is pending');
+    }
+    const response: any = await this.client.restartForUpdate(nodeId);
+    if (!response?.success) {
+      throw new BadRequestException(response?.message || 'agent could not schedule the update restart');
+    }
+    return response;
   }
 
   private validateArtifact(artifactUrl: string, sha256: string) {

@@ -24,6 +24,7 @@ service ServerManagement {
   rpc StreamConsole (ServerActionRequest) returns (stream ConsoleMessage);
   rpc GetUpdateStatus (UpdateStatusRequest) returns (UpdateStatusResponse);
   rpc ApplyUpdate (ApplyUpdateRequest) returns (ApplyUpdateResponse);
+  rpc RestartForUpdate (RestartForUpdateRequest) returns (RestartForUpdateResponse);
   rpc InstallCertificate (InstallCertificateRequest) returns (CertificateActionResponse);
   rpc RollbackCertificate (RollbackCertificateRequest) returns (CertificateActionResponse);
 }
@@ -192,6 +193,11 @@ message ApplyUpdateResponse {
   string message = 2;
   string staged_path = 3;
   bool restart_required = 4;
+}
+message RestartForUpdateRequest {}
+message RestartForUpdateResponse {
+  bool success = 1;
+  string message = 2;
 }
 message InstallCertificateRequest {
   string certificate_pem = 1;

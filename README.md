@@ -174,6 +174,7 @@ sniffing, referrer, cross-origin, permissions, and production HSTS headers.
 - `GET  /api/agents/crowdsec` returns normalized, read-only CrowdSec telemetry for opted-in Linux nodes.
 - `GET  /api/agents/crowdsec/stream` streams those CrowdSec snapshots while an admin is viewing the page.
 - `POST /api/agents/:id/update` stages an update artifact on the target agent.
+- `POST /api/agents/:id/update/restart` safely restarts an agent only when it reports a verified staged update and a pending restart.
 - `DELETE /api/agents/:id` removes an agent from the registry.
 - `POST /api/agents/:id/issue` returns a short-lived node JWT for manual/debug use.
 

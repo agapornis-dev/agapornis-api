@@ -16,13 +16,18 @@ async function main() {
     delete process.env.AGAPORNIS_AGENT_UPDATE_SHA256;
 
     const calls = [];
+    let updateStatus = { runtimeIdentifier: 'linux-x86_64', version: '1.0.0' };
     const service = new AgentUpdateService(
       { list: () => [{ nodeId: 'node-1' }] },
       {
-        getUpdateStatus: async () => ({ runtimeIdentifier: 'linux-x86_64' }),
+        getUpdateStatus: async () => updateStatus,
         applyUpdate: async (nodeId, payload) => {
           calls.push({ nodeId, payload });
           return { accepted: true, nodeId, payload };
+        },
+        restartForUpdate: async nodeId => {
+          calls.push({ nodeId, restart: true });
+          return { success: true, message: 'restart scheduled' };
         },
       },
       {
@@ -49,6 +54,19 @@ async function main() {
     const result = await service.apply('node-1', {});
     assert.equal(result.accepted, true);
     assert.equal(calls[0].payload.sha256, 'a'.repeat(64));
+
+    await assert.rejects(() => service.restart('node-1'), BadRequestException);
+    updateStatus = {
+      runtimeIdentifier: 'linux-x86_64',
+      version: '1.0.0',
+      restartRequired: true,
+      pendingArtifact: '/opt/agapornis/updates/agent.pending',
+    };
+    const pending = await service.status();
+    assert.equal(pending.agents[0].canRestartUpdate, true);
+    const restart = await service.restart('node-1');
+    assert.equal(restart.success, true);
+    assert.equal(calls.at(-1).restart, true);
 
     console.log('agent update validation tests: PASS');
   } finally {

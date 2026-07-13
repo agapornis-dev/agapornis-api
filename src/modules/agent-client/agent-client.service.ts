@@ -198,6 +198,16 @@ export class AgentClientService {
     );
   }
 
+  restartForUpdate(nodeId: string, token?: string) {
+    return this.callServer(
+      nodeId,
+      'RestartForUpdate',
+      {},
+      token,
+      STATUS_TIMEOUT_MS
+    );
+  }
+
   installCertificate(nodeId: string, bundle: { cert: string; key: string; ca: string; fingerprint: string }) {
     return this.callServer(nodeId, 'InstallCertificate', {
       certificate_pem: bundle.cert,

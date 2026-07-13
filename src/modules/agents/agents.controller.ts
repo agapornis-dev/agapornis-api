@@ -143,6 +143,12 @@ export class AgentsController {
     return this.operations.updates.apply(id, body);
   }
 
+  @Post(':id/update/restart')
+  @Roles('admin')
+  async restartForUpdate(@Param('id') id: string) {
+    return this.operations.updates.restart(id);
+  }
+
   @Post(':id/certificate/rotate')
   @Roles('admin')
   async rotateCertificate(@Param('id') id: string) {
