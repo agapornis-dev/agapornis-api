@@ -5,7 +5,7 @@
     "description": "Example Pterodactyl egg to run Agapornis agent and provide webhook hooks"
   },
   "images": ["ghcr.io/your/repo/agapornis-agent:latest"],
-  "startup": "./start.sh",
+  "startup": "./start-demo.sh",
   "scripts": {
     "install": {
       "script": "apt-get update && apt-get install -y curl"
