@@ -1,0 +1,22 @@
+[Unit]
+Description=Agapornis API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agapornis
+Group=agapornis
+WorkingDirectory=/opt/agapornis/api/current
+EnvironmentFile=/etc/agapornis/api.env
+EnvironmentFile=-/var/lib/agapornis/api/version.env
+ExecStart=/usr/bin/env node /opt/agapornis/api/current/dist/main.js
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/agapornis/api /opt/agapornis/api
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=Agapornis native panel update supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/agapornis/update.env
+EnvironmentFile=-/etc/agapornis/api.env
+EnvironmentFile=-/etc/agapornis/frontend.env
+ExecStart=/opt/agapornis/updater/apply-native-update.sh /var/lib/agapornis/api/panel-updates/current-job.json
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/agapornis/api /opt/agapornis/frontend /var/lib/agapornis/api /var/lib/agapornis/frontend
+
+[Install]
+WantedBy=multi-user.target

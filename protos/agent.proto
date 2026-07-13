@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package agapornis.agent;
+
+message RegisterRequest {
+  string nodeId = 1;
+  string fqdn = 2;
+  string status = 3;
+}
+
+message RegisterResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message HeartbeatRequest {
+  string nodeId = 1;
+  int64 timestamp = 2;
+}
+
+message HeartbeatResponse {
+  bool ok = 1;
+}
+
+service AgentService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}

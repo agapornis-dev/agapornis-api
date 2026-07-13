@@ -1,0 +1,1 @@
+agapornis ALL=(root) NOPASSWD: /bin/systemctl start --no-block agapornis-panel-update.service

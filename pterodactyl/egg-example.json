@@ -1,0 +1,14 @@
+{
+  "meta": {
+    "version": "1.0",
+    "name": "agapornis-agent-egg",
+    "description": "Example Pterodactyl egg to run Agapornis agent and provide webhook hooks"
+  },
+  "images": ["ghcr.io/your/repo/agapornis-agent:latest"],
+  "startup": "./start.sh",
+  "scripts": {
+    "install": {
+      "script": "apt-get update && apt-get install -y curl"
+    }
+  }
+}
