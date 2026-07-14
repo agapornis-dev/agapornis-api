@@ -10,11 +10,10 @@ Group=root
 EnvironmentFile=-/etc/agapornis/update.env
 EnvironmentFile=-/etc/agapornis/api.env
 EnvironmentFile=-/etc/agapornis/frontend.env
-ExecStart=/opt/agapornis/updater/apply-native-update.sh /var/lib/agapornis/api/panel-updates/current-job.json
+ExecStart=/opt/agapornis/updater/apply-native-update.sh
 PrivateTmp=true
 ProtectHome=true
-ProtectSystem=strict
-ReadWritePaths=/opt/agapornis/api /opt/agapornis/frontend /var/lib/agapornis/api /var/lib/agapornis/frontend
+ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target

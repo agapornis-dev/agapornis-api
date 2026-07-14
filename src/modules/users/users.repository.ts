@@ -23,7 +23,44 @@ export class UsersRepository {
   async load(): Promise<UserRecord[]> {
     if (!this.enabled) return [];
     const rows = await this.database.query('SELECT * FROM users ORDER BY created_at, id');
-    return rows.map((row: any) => ({
+    return rows.map((row: any) => this.fromRow(row));
+  }
+
+  async findById(id: string): Promise<UserRecord | undefined> {
+    if (!this.enabled) return undefined;
+    const rows = await this.database.query(
+      `SELECT * FROM users WHERE id = ${this.database.placeholders(1)}`,
+      [id],
+    );
+    return rows[0] ? this.fromRow(rows[0]) : undefined;
+  }
+
+  async findByEmail(email: string): Promise<UserRecord | undefined> {
+    if (!this.enabled) return undefined;
+    const rows = await this.database.query(
+      `SELECT * FROM users WHERE email = ${this.database.placeholders(1)}`,
+      [String(email || '').trim().toLowerCase()],
+    );
+    return rows[0] ? this.fromRow(rows[0]) : undefined;
+  }
+
+  async incrementSessionVersion(id: string): Promise<UserRecord | undefined> {
+    if (!this.enabled) return undefined;
+    return this.database.transaction(async tx => {
+      const updateSql = tx.clientType === 'postgres'
+        ? 'UPDATE users SET session_version = session_version + 1, updated_at = $1 WHERE id = $2'
+        : 'UPDATE users SET session_version = session_version + 1, updated_at = ? WHERE id = ?';
+      await tx.query(updateSql, [new Date().toISOString(), id]);
+      const selectSql = tx.clientType === 'postgres'
+        ? 'SELECT * FROM users WHERE id = $1'
+        : 'SELECT * FROM users WHERE id = ?';
+      const rows = await tx.query(selectSql, [id]);
+      return rows[0] ? this.fromRow(rows[0]) : undefined;
+    }, { isolation: 'READ COMMITTED', retries: 1 });
+  }
+
+  private fromRow(row: any): UserRecord {
+    return {
       id: row.id,
       email: row.email,
       name: row.name,
@@ -38,7 +75,7 @@ export class UsersRepository {
       loginSecurity: this.parse(row.login_security, { knownLogins: [] }),
       sessionVersion: Number(row.session_version || 0),
       twoFactor: this.parse(row.two_factor, undefined),
-    }));
+    };
   }
 
   replace(users: UserRecord[]) {

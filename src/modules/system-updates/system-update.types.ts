@@ -45,5 +45,6 @@ export interface PanelUpdateState {
   completedAt?: string;
   failedAt?: string;
   errorMessage?: string;
+  manualApplyRequired?: boolean;
   artifacts?: StagedArtifact[];
 }

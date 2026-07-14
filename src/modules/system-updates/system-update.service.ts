@@ -70,6 +70,7 @@ export class SystemUpdateService implements OnModuleInit {
     await this.refreshSharedState();
 
     const current = this.currentVersions();
+    const managedComponents = this.managedComponents();
     const releases = {} as Partial<Record<PanelComponent, PanelReleaseManifest>>;
     const manifestErrors = {} as Partial<Record<PanelComponent, string>>;
     await Promise.all(PANEL_COMPONENTS.map(async component => {
@@ -83,6 +84,7 @@ export class SystemUpdateService implements OnModuleInit {
         currentVersion: current[component],
         latestVersion: manifest?.version,
         updateAvailable: manifest ? this.compareVersions(manifest.version, current[component]) > 0 : false,
+        managed: managedComponents.includes(component),
         releaseSource: this.releaseSource(component),
         manifest,
         manifestError: manifestErrors[component],
@@ -92,10 +94,12 @@ export class SystemUpdateService implements OnModuleInit {
     return {
       configured: true,
       deployCommandConfigured: Boolean(this.applyCommand()),
+      managedComponents,
       releaseSources: Object.fromEntries(PANEL_COMPONENTS.map(component => [component, this.releaseSource(component)])),
       current,
       components,
       updateAvailable: PANEL_COMPONENTS.some(component => components[component].updateAvailable),
+      deployableUpdateAvailable: managedComponents.some(component => components[component].updateAvailable),
       manifestErrors,
       state: this.state,
     };
@@ -105,14 +109,14 @@ export class SystemUpdateService implements OnModuleInit {
     const locked = await this.redis.withLock('panel-update-deploy', 30 * 60_000, async () => {
       this.observeFrontendVersion(frontendVersion);
       await this.refreshSharedState();
-      if (['staging', 'applying'].includes(this.state.status)) throw new Error('a panel update is already in progress');
+      if (['staging', 'staged', 'applying'].includes(this.state.status)) throw new Error('a panel update is already in progress');
       const command = this.applyCommand();
-      if (!command) throw new Error('AGAPORNIS_PANEL_UPDATE_COMMAND is not configured');
+      const managedComponents = this.managedComponents();
 
       const current = this.currentVersions();
       const selected: SelectedPanelRelease[] = [];
       const unavailable: string[] = [];
-      for (const component of PANEL_COMPONENTS) {
+      for (const component of managedComponents) {
         try {
           const manifest = await this.panelManifest(component, true);
           if (this.compareVersions(manifest.version, current[component]) > 0) selected.push({ component, manifest });
@@ -122,7 +126,7 @@ export class SystemUpdateService implements OnModuleInit {
       }
       if (!selected.length) {
         if (unavailable.length) throw new Error(`no deployable panel update was found (${unavailable.join('; ')})`);
-        throw new Error('the installed API and frontend are already current');
+        throw new Error('the panel components managed by this updater are already current');
       }
 
       const targetVersions = Object.fromEntries(selected.map(({ component, manifest }) => [component, manifest.version]));
@@ -139,12 +143,19 @@ export class SystemUpdateService implements OnModuleInit {
           ...this.state,
           status: 'staged',
           stagedAt: new Date().toISOString(),
+          manualApplyRequired: !command,
+          errorMessage: command
+            ? undefined
+            : 'Automatic deployment is unavailable. The verified update is staged and must be applied manually with: sudo systemctl start agapornis-panel-update.service',
           artifacts: selected.map(({ component, manifest }) => this.stagedArtifact(stagingDirectory, component, manifest.artifact)),
         };
         await this.persistState();
-        await this.scheduleApply(command, stagingDirectory, selected);
+        const environment = await this.writeApplyJob(stagingDirectory, selected);
+        if (command) await this.scheduleApply(command, environment);
         return {
-          message: `${selected.map(({ component, manifest }) => `${component} ${manifest.version}`).join(' and ')} verified and handed to the deployment supervisor`,
+          message: command
+            ? `${selected.map(({ component, manifest }) => `${component} ${manifest.version}`).join(' and ')} verified and handed to the deployment supervisor`
+            : `${selected.map(({ component, manifest }) => `${component} ${manifest.version}`).join(' and ')} verified and staged; manual installation is required`,
           state: this.state,
         };
       } catch (error: any) {
@@ -344,16 +355,7 @@ export class SystemUpdateService implements OnModuleInit {
     }
   }
 
-  private async scheduleApply(command: string, stagingDirectory: string, selected: SelectedPanelRelease[]) {
-    this.state = {
-      ...this.state,
-      status: 'applying',
-      applyStartedAt: new Date().toISOString(),
-      errorMessage: undefined,
-    };
-    await this.persistState();
-    await fsp.unlink(this.resultFile).catch(() => undefined);
-
+  private async writeApplyJob(stagingDirectory: string, selected: SelectedPanelRelease[]) {
     const updates = Object.fromEntries(selected.map(({ component, manifest }) => [component, {
       version: manifest.version,
       artifactPath: path.join(stagingDirectory, `${component}.artifact`),
@@ -372,8 +374,7 @@ export class SystemUpdateService implements OnModuleInit {
     await fsp.writeFile(temporaryJob, JSON.stringify(job, null, 2), { mode: 0o600 });
     await fsp.rename(temporaryJob, this.currentJobFile);
 
-    const args = this.applyArguments();
-    const environment = {
+    return {
       ...this.config.all(),
       AGAPORNIS_UPDATE_JOB: this.currentJobFile,
       AGAPORNIS_UPDATE_STAGING_DIR: stagingDirectory,
@@ -382,6 +383,20 @@ export class SystemUpdateService implements OnModuleInit {
       AGAPORNIS_UPDATE_API_VERSION: updates.api?.version || '',
       AGAPORNIS_UPDATE_FRONTEND_VERSION: updates.frontend?.version || '',
     };
+  }
+
+  private async scheduleApply(command: string, environment: NodeJS.ProcessEnv) {
+    this.state = {
+      ...this.state,
+      status: 'applying',
+      applyStartedAt: new Date().toISOString(),
+      manualApplyRequired: false,
+      errorMessage: undefined,
+    };
+    await this.persistState();
+    await fsp.unlink(this.resultFile).catch(() => undefined);
+
+    const args = this.applyArguments();
     const timer = setTimeout(() => {
       try {
         const child = spawn(command, args, {
@@ -438,6 +453,13 @@ export class SystemUpdateService implements OnModuleInit {
     return this.config.get('AGAPORNIS_PANEL_UPDATE_COMMAND').trim();
   }
 
+  private managedComponents(): PanelComponent[] {
+    const configured = this.config.get('AGAPORNIS_PANEL_UPDATE_COMPONENTS', 'api');
+    const requested = configured.split(',').map(value => value.trim().toLowerCase());
+    const managed = PANEL_COMPONENTS.filter(component => requested.includes(component));
+    return managed.length ? managed : ['api'];
+  }
+
   private applyArguments(): string[] {
     const raw = this.config.get('AGAPORNIS_PANEL_UPDATE_ARGS', '[]');
     let parsed: unknown;
@@ -478,7 +500,7 @@ export class SystemUpdateService implements OnModuleInit {
     const current = this.currentVersions();
     const targets = Object.entries(this.state.targetVersions) as [PanelComponent, string][];
     if (targets.length && targets.every(([component, version]) => this.compareVersions(current[component], version) >= 0)) {
-      this.state = { ...this.state, status: 'completed', completedAt: new Date().toISOString(), errorMessage: undefined };
+      this.state = { ...this.state, status: 'completed', completedAt: new Date().toISOString(), manualApplyRequired: false, errorMessage: undefined };
       return true;
     }
     const started = Date.parse(this.state.applyStartedAt || this.state.startedAt || '');
@@ -515,6 +537,7 @@ export class SystemUpdateService implements OnModuleInit {
         ...this.state,
         status: 'completed',
         completedAt: result.completedAt || new Date().toISOString(),
+        manualApplyRequired: false,
         errorMessage: undefined,
       };
     }

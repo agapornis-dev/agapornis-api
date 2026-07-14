@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseService } from '../database/database.service';
+import { tokenDigest, tokenDigestCandidates } from '../../common/security/token-digest';
 
 export interface RegistrationInvite {
   id: string;
@@ -75,14 +76,14 @@ export class RegistrationInvitesService implements OnModuleInit {
   }
 
   async consume(key: string) {
-    const tokenHash = this.hash(String(key || '').trim());
-    if (!key || !tokenHash) return false;
+    const tokenHashes = tokenDigestCandidates(String(key || '').trim());
+    if (!key) return false;
 
     if (this.database.enabled) {
       return this.database.transaction(async tx => {
         const rows = await tx.query(
-          `SELECT id, expires_at FROM registration_invites WHERE token_hash = ${tx.placeholders(1)} FOR UPDATE`,
-          [tokenHash]
+          `SELECT id, expires_at FROM registration_invites WHERE token_hash IN (${tx.placeholders(tokenHashes.length)}) FOR UPDATE`,
+          tokenHashes
         );
         if (!rows[0]) return false;
         await tx.query(`DELETE FROM registration_invites WHERE id = ${tx.placeholders(1)}`, [rows[0].id]);
@@ -90,7 +91,7 @@ export class RegistrationInvitesService implements OnModuleInit {
       }, { isolation: 'READ COMMITTED', retries: 0 });
     }
 
-    const record = Array.from(this.invites.values()).find(invite => invite.tokenHash === tokenHash);
+    const record = Array.from(this.invites.values()).find(invite => tokenHashes.includes(invite.tokenHash));
     if (!record) return false;
     this.invites.delete(record.id);
     this.save();
@@ -148,7 +149,7 @@ export class RegistrationInvitesService implements OnModuleInit {
   }
 
   private hash(value: string) {
-    return crypto.createHash('sha256').update(value).digest('hex');
+    return tokenDigest(value);
   }
 
   private timestamp(value: unknown) {

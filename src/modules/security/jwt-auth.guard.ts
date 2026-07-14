@@ -14,7 +14,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly reflector: Reflector
   ) {}
 
-  canActivate(context: ExecutionContext) {
+  async canActivate(context: ExecutionContext) {
     const isPublic = this.reflector.getAllAndOverride<boolean>(PUBLIC_ROUTE_KEY, [
       context.getHandler(),
       context.getClass()
@@ -29,7 +29,7 @@ export class JwtAuthGuard implements CanActivate {
 
     try {
       const payload = this.auth.verifyUserToken(token) as any;
-      const user = this.users.findById(payload.sub);
+      const user = await this.users.findByIdForAuth(payload.sub);
       if (!user) throw new Error('user not found');
       if (Number(payload.ver || 0) !== Number(user.sessionVersion || 0)) throw new Error('session revoked');
       request.user = this.users.publicUser(user);

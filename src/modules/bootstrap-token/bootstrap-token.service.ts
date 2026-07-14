@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { DatabaseService } from '../database/database.service';
+import { tokenDigest, tokenDigestCandidates } from '../../common/security/token-digest';
 
 export interface BootstrapTokenRecord {
   tokenHash: string;
@@ -52,9 +53,9 @@ export class BootstrapTokenService implements OnModuleInit {
   consumeToken(token: string): boolean {
     if (!token) return false;
 
-    const tokenHash = this.hashToken(token);
-    const record = this.tokens.get(tokenHash);
-    if (!record) return false;
+    const tokenHash = tokenDigestCandidates(token).find(candidate => this.tokens.has(candidate));
+    const record = tokenHash ? this.tokens.get(tokenHash) : undefined;
+    if (!tokenHash || !record) return false;
 
     // SINGLE USE: Delete the token immediately upon lookup
     this.tokens.delete(tokenHash);
@@ -120,6 +121,6 @@ export class BootstrapTokenService implements OnModuleInit {
   }
 
   private hashToken(token: string) {
-    return crypto.createHash('sha256').update(token).digest('hex');
+    return tokenDigest(token);
   }
 }

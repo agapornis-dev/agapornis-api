@@ -1,7 +1,8 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { createClient } from 'redis';
 import { ApiConfigService } from '../../common/config/config.service';
+import { tokenDigest } from '../../common/security/token-digest';
 
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
@@ -56,7 +57,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async hitRateLimit(name: string, windowSeconds: number, maximum: number): Promise<boolean> {
     if (!this.enabled) return true;
-    const key = this.key(`rate:${createHash('sha256').update(name).digest('hex')}`);
+    const key = this.key(`rate:${tokenDigest(name)}`);
     const count = await this.client!.incr(key);
     if (count === 1) await this.client!.expire(key, windowSeconds);
     return count <= maximum;

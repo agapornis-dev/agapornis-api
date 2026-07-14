@@ -10,6 +10,7 @@ import { SecurityMaterialService } from './security-material.service';
 import { ApiConfigService } from '../../common/config/config.service';
 
 const jwt = require('jsonwebtoken');
+const JWT_ALGORITHM = 'HS512';
 
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -215,9 +216,10 @@ export class AuthService implements OnModuleInit {
       email: user.email,
       role: user.role,
       ver: user.sessionVersion || 0,
+      jti: crypto.randomUUID(),
       scope: 'panel'
     }, this.securityMaterial.userJwtSecret(), {
-      algorithm: 'HS256',
+      algorithm: JWT_ALGORITHM,
       expiresIn: this.config.get('APP_JWT_EXPIRES_IN', '8h'),
       issuer: 'agapornis-master',
       audience: 'agapornis-panel'
@@ -226,30 +228,30 @@ export class AuthService implements OnModuleInit {
 
   verifyUserToken(token: string) {
     return jwt.verify(token, this.securityMaterial.userJwtSecret(), {
-      algorithms: ['HS256'],
+      algorithms: [JWT_ALGORITHM],
       issuer: 'agapornis-master',
       audience: 'agapornis-panel'
     });
   }
 
-  signTwoFactorLoginChallenge(userId: string) {
-    return this.signPurposeToken({ sub: userId }, 'two-factor-login', '5m');
+  signTwoFactorLoginChallenge(userId: string, sessionVersion: number) {
+    return this.signPurposeToken({ sub: userId, ver: sessionVersion }, 'two-factor-login', '5m');
   }
 
   verifyTwoFactorLoginChallenge(token: string) {
     return this.verifyPurposeToken(token, 'two-factor-login');
   }
 
-  signTwoFactorSetup(userId: string, encryptedSecret: string) {
-    return this.signPurposeToken({ sub: userId, encryptedSecret }, 'two-factor-setup', '10m');
+  signTwoFactorSetup(userId: string, sessionVersion: number, encryptedSecret: string) {
+    return this.signPurposeToken({ sub: userId, ver: sessionVersion, encryptedSecret }, 'two-factor-setup', '10m');
   }
 
   verifyTwoFactorSetup(token: string) {
     return this.verifyPurposeToken(token, 'two-factor-setup');
   }
 
-  signEmailVerification(userId: string, email: string) {
-    return this.signPurposeToken({ sub: userId, email }, 'email-verification', '24h');
+  signEmailVerification(userId: string, sessionVersion: number, email: string) {
+    return this.signPurposeToken({ sub: userId, ver: sessionVersion, email }, 'email-verification', '24h');
   }
 
   verifyEmailVerification(token: string) {
@@ -257,8 +259,8 @@ export class AuthService implements OnModuleInit {
   }
 
   private signPurposeToken(payload: Record<string, any>, purpose: string, expiresIn: string) {
-    return jwt.sign({ ...payload, purpose }, this.securityMaterial.userJwtSecret(), {
-      algorithm: 'HS256',
+    return jwt.sign({ ...payload, purpose, jti: crypto.randomUUID() }, this.securityMaterial.userJwtSecret(), {
+      algorithm: JWT_ALGORITHM,
       expiresIn,
       issuer: 'agapornis-master',
       audience: 'agapornis-auth-challenge'
@@ -267,7 +269,7 @@ export class AuthService implements OnModuleInit {
 
   private verifyPurposeToken(token: string, purpose: string) {
     const payload = jwt.verify(token, this.securityMaterial.userJwtSecret(), {
-      algorithms: ['HS256'],
+      algorithms: [JWT_ALGORITHM],
       issuer: 'agapornis-master',
       audience: 'agapornis-auth-challenge'
     }) as any;

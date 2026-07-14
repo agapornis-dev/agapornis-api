@@ -40,6 +40,11 @@ export class PanelSettingsService implements OnModuleInit {
 
   publicSettings() {
     return {
+      attribution: {
+        required: true,
+        text: 'Powered by Agapornis',
+        license: 'AGPL-3.0-only'
+      },
       branding: this.settings.branding,
       socialLinks: this.settings.socialLinks,
       registration: this.settings.registration,

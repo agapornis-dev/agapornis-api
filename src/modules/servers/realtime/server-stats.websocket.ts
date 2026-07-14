@@ -31,7 +31,7 @@ export function installServerStatsWebSocket(server: HttpServer, deps: StatsWebSo
       const nodeId = decodeURIComponent(match[1]);
       const serverId = decodeURIComponent(match[2]);
       const token = cookieValue(req.headers.cookie, PANEL_SESSION_COOKIE);
-      const user = authenticateUser(token, req, deps);
+      const user = await authenticateUser(token, req, deps);
       const serverRecord = await deps.registry.get(serverId);
 
       if (!serverRecord || serverRecord.nodeId !== nodeId || !deps.registry.canAccess(serverRecord, user)) {
@@ -47,11 +47,11 @@ export function installServerStatsWebSocket(server: HttpServer, deps: StatsWebSo
   });
 }
 
-function authenticateUser(token: string, req: IncomingMessage, deps: StatsWebSocketDeps) {
+async function authenticateUser(token: string, req: IncomingMessage, deps: StatsWebSocketDeps) {
   if (!token) throw new Error('token required');
 
   const payload = deps.auth.verifyUserToken(token) as any;
-  const user = deps.users.findById(payload.sub);
+  const user = await deps.users.findByIdForAuth(payload.sub);
   if (!user) throw new Error('user not found');
   if (Number(payload.ver || 0) !== Number(user.sessionVersion || 0)) throw new Error('session revoked');
 

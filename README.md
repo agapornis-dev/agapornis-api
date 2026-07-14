@@ -20,6 +20,16 @@ npx tsc
 NODE_ENV=production node dist/main.js
 ```
 
+The recommended production layout binds the API to loopback HTTP and lets an existing NGINX or Traefik HTTPS entrypoint own certificate issuance and renewal:
+
+```dotenv
+API_HOST=127.0.0.1
+PORT=3001
+TRUST_PROXY=true
+```
+
+Do not expose port `3001` directly. Normal browser traffic reaches the API through the same-origin frontend proxy. If direct API clients need a public hostname, proxy `api.example.com` to `127.0.0.1:3001` and reuse the certificate resolver already configured in NGINX or Traefik. Native Fastify HTTPS remains optional for deployments without a TLS proxy; `API_TLS_CERT_PATH` and `API_TLS_KEY_PATH` enable it, while `API_TLS_CA_PATH` with `API_TLS_REQUIRE_CLIENT_CERT=true` adds native client-certificate validation.
+
 The API creates its panel JWT secret, 2FA encryption key, private CA, and master mTLS identity on first boot. With PostgreSQL or MySQL these values are stored as one shared cluster security document and every replica uses the same material. With JSON fallback they remain instance-local in `data/security-material.json`.
 
 ## Database
@@ -70,7 +80,7 @@ The API, frontend, and Rust agent release independently from their own repositor
 - `agapornis-frontend` publishes a source archive for the native Next.js service.
 - `agapornis-agent-rust` publishes `linux-x86_64` and `linux-aarch64` binaries.
 
-The Updates screen compares the installed API and frontend versions separately. Deploying downloads only newer components, verifies the declared size and SHA-256 hash, writes a fixed update job, and asks a dedicated systemd unit to apply it. The supervisor builds versioned releases under `/opt/agapornis`, switches the `current` symlinks, restarts API before frontend, and rolls the whole transaction back if either health check fails.
+The Updates screen compares the installed API and frontend versions separately. Deploying downloads only newer components managed by the current updater host, verifies the declared size and SHA-256 hash, and writes a fixed update job. If automatic deployment is configured, the dedicated systemd unit applies it; otherwise the update remains staged for a manual `systemctl start agapornis-panel-update.service`. A frontend on another host is still reported, but it is not deployed by the API host unless that installation is explicitly managed there.
 
 ### Install the native update supervisor
 
@@ -105,11 +115,16 @@ Set these values in `/etc/agapornis/api.env`:
 NODE_ENV=production
 PORT=3001
 AGAPORNIS_PANEL_UPDATE_DIR=/var/lib/agapornis/api/panel-updates
-AGAPORNIS_PANEL_UPDATE_COMMAND=/usr/bin/sudo
-AGAPORNIS_PANEL_UPDATE_ARGS=["/bin/systemctl","start","--no-block","agapornis-panel-update.service"]
+AGAPORNIS_PANEL_UPDATE_COMPONENTS=api
 ```
 
-The API process can only start the fixed updater unit through the supplied sudoers rule. The updater runs in its own systemd cgroup, so it remains alive while the API is restarted and can perform post-restart health checks. Optional settings in `/etc/agapornis/update.env` include `AGAPORNIS_API_HEALTH_URL`, `AGAPORNIS_FRONTEND_HEALTH_URL`, `AGAPORNIS_UPDATE_HEALTH_ATTEMPTS`, `AGAPORNIS_ROOT_DIR`, and `AGAPORNIS_STATE_DIR`.
+`AGAPORNIS_PANEL_UPDATE_COMPONENTS` is a comma-separated list of services installed on the updater host. It defaults to `api`; use `api,frontend` only when both local installations can be controlled by this supervisor. This prevents an API and frontend deployed on different hosts from being treated as one filesystem transaction.
+
+No deployment command is required. Without one, the API verifies and stages updates and an administrator starts `agapornis-panel-update.service` manually. To allow the API to start the fixed updater unit automatically, optionally add `AGAPORNIS_PANEL_UPDATE_COMMAND=/usr/bin/sudo` and `AGAPORNIS_PANEL_UPDATE_ARGS=["/bin/systemctl","start","--no-block","agapornis-panel-update.service"]`. The updater runs in its own systemd cgroup, so it remains alive while the API is restarted and can perform post-restart health checks.
+
+The legacy `AGAPORNIS_ROOT_DIR` and `AGAPORNIS_STATE_DIR` defaults remain supported. Independent layouts can set `AGAPORNIS_API_ROOT_DIR`, `AGAPORNIS_FRONTEND_ROOT_DIR`, `AGAPORNIS_API_STATE_DIR`, and `AGAPORNIS_FRONTEND_STATE_DIR`. Optional settings in `/etc/agapornis/update.env` also include `AGAPORNIS_API_HEALTH_URL`, `AGAPORNIS_FRONTEND_HEALTH_URL`, and `AGAPORNIS_UPDATE_HEALTH_ATTEMPTS`.
+
+Public panel settings include the standard `Powered by Agapornis` credit. Normal API responses are not modified with watermark headers.
 
 Release manifest URLs default to the public `agapornis-dev` repositories. `AGAPORNIS_API_RELEASE_MANIFEST_URL`, `AGAPORNIS_FRONTEND_RELEASE_MANIFEST_URL`, and `AGAPORNIS_AGENT_RELEASE_MANIFEST_URL` can point to an HTTPS mirror. `AGAPORNIS_PANEL_UPDATE_MAX_BYTES` defaults to 512 MiB, and `AGAPORNIS_PANEL_UPDATE_TIMEOUT_MS` marks a supervisor job failed after one hour without a result.
 
@@ -133,25 +148,26 @@ Password reset is email-only. Enable SMTP and set the public HTTPS panel URL und
 - `POST /api/auth/register` with `{ email, password, name }`
 - `POST /api/auth/login` with `{ email, password }`
 - `GET  /api/auth/me`
+- `POST /api/auth/sessions/revoke-all` invalidates every JWT previously issued for the current account
 - `GET  /api/auth/users`
 - `PATCH /api/auth/users/:id/role` with `{ role }`
 
 Invitation-key registration can be enabled in Panel Settings or with
 `PANEL_REGISTRATION_INVITE_REQUIRED=true`. Administrators create single-use keys through
 `POST /api/auth/invitations`, list unused keys with `GET /api/auth/invitations`, and revoke one
-with `DELETE /api/auth/invitations/:id`. Only the SHA-256 hash is stored; the plaintext key is
+with `DELETE /api/auth/invitations/:id`. Only the SHA3-512 digest is stored; the plaintext key is
 returned once when created and is submitted as `inviteKey` during registration.
 
-The first registered user becomes `owner`. Later public registrations become `viewer`.
+The first registered user becomes `owner`. Later public registrations become `user`.
 
 Roles:
 
-- `viewer` can read status, stats, console and files.
-- `operator` can create/start/stop/restart servers, send commands and modify files.
+- `user` can manage owned servers and explicitly granted collaborator actions.
+- `support` adds support-ticket and limited operational access.
 - `admin` can manage agents, eggs and users.
 - `owner` has every permission.
 
-API endpoints require `Authorization: Bearer <panel JWT>` unless stated otherwise. The Nest master mints short-lived node JWTs internally when it forwards calls to agents.
+API endpoints require `Authorization: Bearer <panel JWT>` unless stated otherwise. Panel JWTs use HS512 and a per-account session version; revoke-all, password reset, and role changes invalidate older versions. The Nest master mints short-lived node JWTs internally when it forwards calls to agents.
 
 Authentication and role checks are global and deny access by default. Public
 routes are explicitly marked in code and are limited to authentication entry
@@ -220,7 +236,7 @@ Cronjobs dispatch events through the webhook target system. The minimum interval
 
 ## Servers
 
-- `GET    /api/servers` lists assigned servers. Viewers only see their own servers; staff sees all servers.
+- `GET    /api/servers` lists assigned servers. Users only see servers they own or collaborate on; staff sees all servers.
 - `GET    /api/servers/:id`
 - `DELETE /api/servers/:id` removes stored server metadata.
 - `POST   /api/agents/:id/servers`
@@ -233,7 +249,7 @@ Cronjobs dispatch events through the webhook target system. The minimum interval
 - `POST   /api/agents/:id/servers/:serverId/command` with `{ command }`
 - `GET    /api/agents/:id/servers/:serverId/console` streams Server-Sent Events from the agent console.
 
-Server lifecycle and console routes are available to viewers for their own assigned servers. Owners/admins/operators can manage all servers.
+Server lifecycle and console routes are available to users for servers they own or collaborate on. Staff roles can operate across managed servers, subject to route and service policy.
 
 Server owners and administrators can share a server with either `read_only` or `operator`
 permission. Read-only collaborators can inspect status, console output, activity, and files;
@@ -249,7 +265,7 @@ databases, webhooks, and settings require operator access.
 - `GET    /api/agents/:id/servers/:serverId/files/download?path=/world.zip`
 - `DELETE /api/agents/:id/servers/:serverId/files?path=/old-file.txt`
 
-Assigned viewers can manage their own server console, files, variables, server webhooks, and egg changes. Owners/admins are still required for CPU, memory, disk, and CPU-core limit changes.
+Assigned users can manage server console, files, variables, webhooks, and egg changes when their collaborator permission allows it. Owners/admins are still required for CPU, memory, disk, and CPU-core limit changes.
 
 ## Server Egg Changes
 
@@ -261,7 +277,7 @@ Changing an egg reinstalls the server content on the same node/server id and kee
 
 - `POST /api/webhooks/whmcs`
 
-WHMCS requests require `x-agapornis-secret` or `x-whmcs-secret` matching `WHMCS_WEBHOOK_SECRET`. Buy/order/invoice-paid style events create or find a viewer account by customer email, provision the requested egg, and assign the server to that user. Supported defaults include `WHMCS_DEFAULT_EGG_ID` and `WHMCS_DEFAULT_NODE_ID`; payload fields and WHMCS custom/config options can override `eggId`, `nodeId`, `serverId`, `serverName`, and egg variables.
+WHMCS requests require `x-agapornis-secret` or `x-whmcs-secret` matching `WHMCS_WEBHOOK_SECRET`. Buy/order/invoice-paid style events create or find a user account by customer email, provision the requested egg, and assign the server to that user. Supported defaults include `WHMCS_DEFAULT_EGG_ID` and `WHMCS_DEFAULT_NODE_ID`; payload fields and WHMCS custom/config options can override `eggId`, `nodeId`, `serverId`, `serverName`, and egg variables.
 
 ## gRPC Server
 

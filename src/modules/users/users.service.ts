@@ -6,6 +6,7 @@ import * as argon2 from 'argon2';
 import { UsersRepository } from './users.repository';
 import { PasswordPolicySettings, validatePassword } from '../auth/password-policy';
 import { ApiConfigService } from '../../common/config/config.service';
+import { tokenDigest } from '../../common/security/token-digest';
 
 export type UserRole = 'owner' | 'admin' | 'support' | 'user';
 export type SocialProvider = 'google' | 'discord';
@@ -66,6 +67,37 @@ export class UsersService implements OnModuleInit {
 
   findById(id: string) {
     return this.users.get(id);
+  }
+
+  async findByIdForAuth(id: string) {
+    if (!this.repository.enabled) return this.findById(id);
+    const fresh = await this.repository.findById(id);
+    if (fresh) this.users.set(id, fresh);
+    else this.users.delete(id);
+    return fresh;
+  }
+
+  async findByEmailForAuth(email: string) {
+    if (!this.repository.enabled) return this.findByEmail(email);
+    const fresh = await this.repository.findByEmail(this.normalizeEmail(email));
+    if (fresh) this.users.set(fresh.id, fresh);
+    return fresh;
+  }
+
+  async revokeAllSessions(userId: string) {
+    const current = this.users.get(userId);
+    if (!current) throw new Error('user not found');
+
+    if (this.repository.enabled) {
+      const fresh = await this.repository.incrementSessionVersion(userId);
+      if (!fresh) throw new Error('user not found');
+      this.users.set(userId, fresh);
+      return { revoked: true, sessionVersion: fresh.sessionVersion || 0 };
+    }
+
+    current.sessionVersion = (current.sessionVersion || 0) + 1;
+    this.save();
+    return { revoked: true, sessionVersion: current.sessionVersion };
   }
 
   hasUsers() {
@@ -481,14 +513,17 @@ export class UsersService implements OnModuleInit {
   ) {
     const ipPrefix = this.ipPrefix(context.ip);
     const userAgent = String(context.userAgent || 'unknown').trim().slice(0, 300) || 'unknown';
-    const fingerprint = crypto
+    const material = `${ipPrefix}|${userAgent}`;
+    const fingerprint = tokenDigest(material);
+    const legacyFingerprint = crypto
       .createHash('sha256')
-      .update(`${ipPrefix}|${userAgent}`)
+      .update(material)
       .digest('hex');
     user.loginSecurity ||= { knownLogins: [] };
     const known = user.loginSecurity.knownLogins;
-    const existing = known.find(login => login.fingerprint === fingerprint);
+    const existing = known.find(login => login.fingerprint === fingerprint || login.fingerprint === legacyFingerprint);
     if (existing) {
+      existing.fingerprint = fingerprint;
       existing.lastSeenAt = now;
       return { suspicious: false, ipPrefix, userAgent };
     }

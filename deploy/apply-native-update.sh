@@ -2,16 +2,21 @@
 set -eu
 umask 077
 
-JOB_FILE=${1:-/var/lib/agapornis/api/panel-updates/current-job.json}
 ROOT_DIR=${AGAPORNIS_ROOT_DIR:-/opt/agapornis}
 STATE_DIR=${AGAPORNIS_STATE_DIR:-/var/lib/agapornis}
-UPDATE_ROOT=${AGAPORNIS_PANEL_UPDATE_DIR:-$STATE_DIR/api/panel-updates}
+API_ROOT_DIR=${AGAPORNIS_API_ROOT_DIR:-$ROOT_DIR/api}
+FRONTEND_ROOT_DIR=${AGAPORNIS_FRONTEND_ROOT_DIR:-$ROOT_DIR/frontend}
+API_STATE_DIR=${AGAPORNIS_API_STATE_DIR:-$STATE_DIR/api}
+FRONTEND_STATE_DIR=${AGAPORNIS_FRONTEND_STATE_DIR:-$STATE_DIR/frontend}
+UPDATE_ROOT=${AGAPORNIS_PANEL_UPDATE_DIR:-$API_STATE_DIR/panel-updates}
+JOB_FILE=${1:-${AGAPORNIS_UPDATE_JOB:-$UPDATE_ROOT/current-job.json}}
 API_PORT=${PORT:-3001}
 API_HEALTH_URL=${AGAPORNIS_API_HEALTH_URL:-http://127.0.0.1:$API_PORT/api/system/health}
 FRONTEND_HEALTH_URL=${AGAPORNIS_FRONTEND_HEALTH_URL:-http://127.0.0.1:3000/}
 HEALTH_ATTEMPTS=${AGAPORNIS_UPDATE_HEALTH_ATTEMPTS:-30}
 SERVICE_USER=${AGAPORNIS_SERVICE_USER:-agapornis}
-NPM_CACHE_DIR=${AGAPORNIS_NPM_CACHE_DIR:-$STATE_DIR/api/.npm-cache}
+API_NPM_CACHE_DIR=${AGAPORNIS_API_NPM_CACHE_DIR:-${AGAPORNIS_NPM_CACHE_DIR:-$API_STATE_DIR/.npm-cache}}
+FRONTEND_NPM_CACHE_DIR=${AGAPORNIS_FRONTEND_NPM_CACHE_DIR:-${AGAPORNIS_NPM_CACHE_DIR:-$FRONTEND_STATE_DIR/.npm-cache}}
 
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
 [ -f "$JOB_FILE" ] || { echo "update job is missing: $JOB_FILE" >&2; exit 1; }
@@ -38,8 +43,8 @@ validate_component() {
 }
 
 target_versions=$(jq -c '.updates | with_entries(.value = .value.version)' "$JOB_FILE")
-old_api=$(readlink -f "$ROOT_DIR/api/current" 2>/dev/null || true)
-old_frontend=$(readlink -f "$ROOT_DIR/frontend/current" 2>/dev/null || true)
+old_api=$(readlink -f "$API_ROOT_DIR/current" 2>/dev/null || true)
+old_frontend=$(readlink -f "$FRONTEND_ROOT_DIR/current" 2>/dev/null || true)
 api_version_backup="$staging/api-version.env.previous"
 frontend_version_backup="$staging/frontend-version.env.previous"
 activated=0
@@ -63,13 +68,13 @@ write_result() {
 }
 
 restore_link() {
-  component=$1
+  root=$1
   previous=$2
   if [ -n "$previous" ]; then
-    ln -sfn "$previous" "$ROOT_DIR/$component/current.rollback"
-    mv -Tf "$ROOT_DIR/$component/current.rollback" "$ROOT_DIR/$component/current"
+    ln -sfn "$previous" "$root/current.rollback"
+    mv -Tf "$root/current.rollback" "$root/current"
   else
-    rm -f "$ROOT_DIR/$component/current"
+    rm -f "$root/current"
   fi
 }
 
@@ -82,12 +87,12 @@ restore_version_file() {
 rollback() {
   [ "$activated" = 1 ] || return 0
   [ -z "$api_version" ] || {
-    restore_link api "$old_api"
-    restore_version_file "$STATE_DIR/api/version.env" "$api_version_backup"
+    restore_link "$API_ROOT_DIR" "$old_api"
+    restore_version_file "$API_STATE_DIR/version.env" "$api_version_backup"
   }
   [ -z "$frontend_version" ] || {
-    restore_link frontend "$old_frontend"
-    restore_version_file "$STATE_DIR/frontend/version.env" "$frontend_version_backup"
+    restore_link "$FRONTEND_ROOT_DIR" "$old_frontend"
+    restore_version_file "$FRONTEND_STATE_DIR/version.env" "$frontend_version_backup"
   }
   systemctl daemon-reload
   [ -z "$api_version" ] || systemctl restart agapornis-api.service || true
@@ -112,32 +117,32 @@ id "$SERVICE_USER" >/dev/null 2>&1 || { error_message="service user does not exi
 validate_component api "$api_version" "$api_artifact"
 validate_component frontend "$frontend_version" "$frontend_artifact"
 [ -n "$api_version$frontend_version" ] || { error_message="update job has no components"; exit 1; }
-[ ! -f "$STATE_DIR/api/version.env" ] || cp "$STATE_DIR/api/version.env" "$api_version_backup"
-[ ! -f "$STATE_DIR/frontend/version.env" ] || cp "$STATE_DIR/frontend/version.env" "$frontend_version_backup"
+[ ! -f "$API_STATE_DIR/version.env" ] || cp "$API_STATE_DIR/version.env" "$api_version_backup"
+[ ! -f "$FRONTEND_STATE_DIR/version.env" ] || cp "$FRONTEND_STATE_DIR/version.env" "$frontend_version_backup"
 
 prepare_api() {
-  release="$ROOT_DIR/api/releases/$api_version"
+  release="$API_ROOT_DIR/releases/$api_version"
   [ ! -e "$release" ] || { [ -f "$release/dist/main.js" ] && return 0; echo "existing API release is incomplete" >&2; exit 1; }
-  build="$ROOT_DIR/api/releases/.${api_version}.building.$$"
+  build="$API_ROOT_DIR/releases/.${api_version}.building.$$"
   mkdir -p "$build"
   chown "$SERVICE_USER:$SERVICE_USER" "$build"
   runuser -u "$SERVICE_USER" -- tar -xzf "$api_artifact" -C "$build"
-  runuser -u "$SERVICE_USER" -- env HOME="$STATE_DIR/api" npm_config_cache="$NPM_CACHE_DIR" \
+  runuser -u "$SERVICE_USER" -- env HOME="$API_STATE_DIR" npm_config_cache="$API_NPM_CACHE_DIR" \
     sh -c 'cd "$1" && npm ci && npx tsc && npm prune --omit=dev' sh "$build"
-  ln -s "$STATE_DIR/api/data" "$build/data"
+  ln -s "$API_STATE_DIR/data" "$build/data"
   mv "$build" "$release"
 }
 
 prepare_frontend() {
-  release="$ROOT_DIR/frontend/releases/$frontend_version"
+  release="$FRONTEND_ROOT_DIR/releases/$frontend_version"
   [ ! -e "$release" ] || { [ -f "$release/.next/BUILD_ID" ] && return 0; echo "existing frontend release is incomplete" >&2; exit 1; }
-  build="$ROOT_DIR/frontend/releases/.${frontend_version}.building.$$"
+  build="$FRONTEND_ROOT_DIR/releases/.${frontend_version}.building.$$"
   mkdir -p "$build"
   chown "$SERVICE_USER:$SERVICE_USER" "$build"
   runuser -u "$SERVICE_USER" -- tar -xzf "$frontend_artifact" -C "$build"
   runuser -u "$SERVICE_USER" -- env \
-    HOME="$STATE_DIR/api" \
-    npm_config_cache="$NPM_CACHE_DIR" \
+    HOME="$FRONTEND_STATE_DIR" \
+    npm_config_cache="$FRONTEND_NPM_CACHE_DIR" \
     AGAPORNIS_API_URL="${AGAPORNIS_API_URL:-http://127.0.0.1:3001/api}" \
     AGAPORNIS_FRONTEND_VERSION="$frontend_version" \
     sh -c 'cd "$1" && npm ci && npm run build && npm prune --omit=dev' sh "$build"
@@ -157,22 +162,24 @@ wait_healthy() {
   return 1
 }
 
-mkdir -p "$ROOT_DIR/api/releases" "$ROOT_DIR/frontend/releases" "$STATE_DIR/api" "$STATE_DIR/frontend" "$NPM_CACHE_DIR"
-chown "$SERVICE_USER:$SERVICE_USER" "$STATE_DIR/api" "$STATE_DIR/frontend" "$NPM_CACHE_DIR"
+[ -z "$api_version" ] || mkdir -p "$API_ROOT_DIR/releases" "$API_STATE_DIR" "$API_NPM_CACHE_DIR"
+[ -z "$frontend_version" ] || mkdir -p "$FRONTEND_ROOT_DIR/releases" "$FRONTEND_STATE_DIR" "$FRONTEND_NPM_CACHE_DIR"
+[ -z "$api_version" ] || chown "$SERVICE_USER:$SERVICE_USER" "$API_STATE_DIR" "$API_NPM_CACHE_DIR"
+[ -z "$frontend_version" ] || chown "$SERVICE_USER:$SERVICE_USER" "$FRONTEND_STATE_DIR" "$FRONTEND_NPM_CACHE_DIR"
 [ -z "$api_version" ] || prepare_api
 [ -z "$frontend_version" ] || prepare_frontend
 
 [ -z "$api_version" ] || {
-  ln -sfn "$ROOT_DIR/api/releases/$api_version" "$ROOT_DIR/api/current.next"
-  mv -Tf "$ROOT_DIR/api/current.next" "$ROOT_DIR/api/current"
-  printf 'AGAPORNIS_API_VERSION="%s"\n' "$api_version" > "$STATE_DIR/api/version.env.next"
-  mv "$STATE_DIR/api/version.env.next" "$STATE_DIR/api/version.env"
+  ln -sfn "$API_ROOT_DIR/releases/$api_version" "$API_ROOT_DIR/current.next"
+  mv -Tf "$API_ROOT_DIR/current.next" "$API_ROOT_DIR/current"
+  printf 'AGAPORNIS_API_VERSION="%s"\n' "$api_version" > "$API_STATE_DIR/version.env.next"
+  mv "$API_STATE_DIR/version.env.next" "$API_STATE_DIR/version.env"
 }
 [ -z "$frontend_version" ] || {
-  ln -sfn "$ROOT_DIR/frontend/releases/$frontend_version" "$ROOT_DIR/frontend/current.next"
-  mv -Tf "$ROOT_DIR/frontend/current.next" "$ROOT_DIR/frontend/current"
-  printf 'AGAPORNIS_FRONTEND_VERSION="%s"\n' "$frontend_version" > "$STATE_DIR/frontend/version.env.next"
-  mv "$STATE_DIR/frontend/version.env.next" "$STATE_DIR/frontend/version.env"
+  ln -sfn "$FRONTEND_ROOT_DIR/releases/$frontend_version" "$FRONTEND_ROOT_DIR/current.next"
+  mv -Tf "$FRONTEND_ROOT_DIR/current.next" "$FRONTEND_ROOT_DIR/current"
+  printf 'AGAPORNIS_FRONTEND_VERSION="%s"\n' "$frontend_version" > "$FRONTEND_STATE_DIR/version.env.next"
+  mv "$FRONTEND_STATE_DIR/version.env.next" "$FRONTEND_STATE_DIR/version.env"
 }
 activated=1
 systemctl daemon-reload

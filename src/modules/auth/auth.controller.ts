@@ -74,13 +74,14 @@ export class AuthController {
       redirectUri: data.redirectUri,
       codeVerifier: data.codeVerifier
     });
-    const user = this.users.findById(socialUser.id)!;
+    const user = await this.users.findByIdForAuth(socialUser.id);
+    if (!user) throw new HttpException('user not found', HttpStatus.NOT_FOUND);
     this.bans.assertAllowed({ userId: user.id, email: user.email, ip: this.bans.requestIp(req) });
     if (this.panelSettings.emailVerificationRequired() && user.emailVerificationPending === true) {
       await this.sendEmailVerification(user);
       throw new HttpException('verify your current email address before signing in', HttpStatus.FORBIDDEN);
     }
-    if (user.twoFactor?.enabled) return this.twoFactorChallenge(user.id);
+    if (user.twoFactor?.enabled) return this.twoFactorChallenge(user);
     return this.completeLogin(user, req, 'auth.social_login', { provider });
   }
 
@@ -217,7 +218,7 @@ export class AuthController {
     const data = validateAuthLogin(body);
     this.bans.assertAllowed({ email: data.email, ip: this.bans.requestIp(req) });
     await this.panelSettings.enforceAuthPolicy('login', req, data);
-    const user = this.users.findByEmail(data.email);
+    const user = await this.users.findByEmailForAuth(data.email);
     if (!user || !await this.users.verifyPassword(user, data.password)) {
       throw new HttpException('invalid email or password', HttpStatus.UNAUTHORIZED);
     }
@@ -230,7 +231,7 @@ export class AuthController {
       }, HttpStatus.FORBIDDEN);
     }
 
-    if (user.twoFactor?.enabled) return this.twoFactorChallenge(user.id);
+    if (user.twoFactor?.enabled) return this.twoFactorChallenge(user);
     return this.completeLogin(user, req, 'auth.login');
   }
 
@@ -302,6 +303,10 @@ export class AuthController {
     try {
       const data = validateEmailVerificationConfirm(body);
       const verification = this.auth.verifyEmailVerification(data.token);
+      const current = await this.users.findByIdForAuth(verification.sub);
+      if (!current || Number(verification.ver) !== Number(current.sessionVersion || 0)) {
+        throw new Error('email verification link has been revoked');
+      }
       const user = this.users.markEmailVerified(verification.sub, verification.email);
       this.activityLog.log({
         event: 'auth.email_verified',
@@ -321,8 +326,9 @@ export class AuthController {
     try {
       const data = validateTwoFactorLogin(body);
       const challenge = this.auth.verifyTwoFactorLoginChallenge(data.challengeToken);
-      const user = this.users.findById(challenge.sub);
+      const user = await this.users.findByIdForAuth(challenge.sub);
       if (!user?.twoFactor?.enabled) throw new Error('two-factor authentication is not enabled');
+      if (Number(challenge.ver) !== Number(user.sessionVersion || 0)) throw new Error('authentication challenge has been revoked');
       this.bans.assertAllowed({ userId: user.id, email: user.email, ip: this.bans.requestIp(req) });
       this.twoFactor.enforceAttemptLimit(user.id);
       if (!await this.verifySecondFactor(user, data.code)) {
@@ -346,7 +352,7 @@ export class AuthController {
       secret: setup.secret,
       formattedSecret: setup.formattedSecret,
       otpauthUri: setup.otpauthUri,
-      setupToken: this.auth.signTwoFactorSetup(user.id, setup.encryptedSecret)
+      setupToken: this.auth.signTwoFactorSetup(user.id, user.sessionVersion || 0, setup.encryptedSecret)
     };
   }
 
@@ -356,7 +362,13 @@ export class AuthController {
     try {
       const data = validateTwoFactorEnable(body);
       const setup = this.auth.verifyTwoFactorSetup(data.setupToken);
-      if (setup.sub !== req.user.id || !this.twoFactor.verifyEncryptedSecret(setup.encryptedSecret, data.code)) {
+      const currentUser = await this.users.findByIdForAuth(req.user.id);
+      if (
+        !currentUser
+        || setup.sub !== req.user.id
+        || Number(setup.ver) !== Number(currentUser.sessionVersion || 0)
+        || !this.twoFactor.verifyEncryptedSecret(setup.encryptedSecret, data.code)
+      ) {
         throw new Error('invalid authentication code');
       }
       const recoveryCodes = this.twoFactor.createRecoveryCodes();
@@ -405,6 +417,18 @@ export class AuthController {
   @Get('me')
   me(@Req() req: any) {
     return req.user;
+  }
+
+  @Post('sessions/revoke-all')
+  async revokeAllSessions(@Req() req: any) {
+    const result = await this.users.revokeAllSessions(req.user.id);
+    this.activityLog.log({
+      event: 'auth.sessions_revoked',
+      userId: req.user.id,
+      userEmail: req.user.email,
+      ip: this.clientIp(req),
+    });
+    return { revoked: result.revoked };
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -486,7 +510,7 @@ export class AuthController {
   }
 
   private async sendEmailVerification(user: any) {
-    const token = this.auth.signEmailVerification(user.id, user.email);
+    const token = this.auth.signEmailVerification(user.id, user.sessionVersion || 0, user.email);
     const sent = await this.mail.send('emailVerification', user.email, {
       'user.name': user.name,
       'user.email': user.email,
@@ -495,10 +519,10 @@ export class AuthController {
     if (!sent) throw new Error('email verification could not be sent; contact an administrator');
   }
 
-  private twoFactorChallenge(userId: string) {
+  private twoFactorChallenge(user: any) {
     return {
       requiresTwoFactor: true,
-      challengeToken: this.auth.signTwoFactorLoginChallenge(userId)
+      challengeToken: this.auth.signTwoFactorLoginChallenge(user.id, user.sessionVersion || 0)
     };
   }
 

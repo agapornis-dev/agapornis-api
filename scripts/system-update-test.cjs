@@ -15,9 +15,11 @@ const checksum = value => crypto.createHash('sha256').update(value).digest('hex'
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agapornis-panel-update-'));
+  const manualRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agapornis-panel-update-manual-'));
   const variables = [
     'NODE_ENV', 'AGAPORNIS_PANEL_UPDATE_DIR', 'AGAPORNIS_PANEL_UPDATE_COMMAND',
     'AGAPORNIS_PANEL_UPDATE_ARGS', 'AGAPORNIS_PANEL_UPDATE_COMMAND_CWD',
+    'AGAPORNIS_PANEL_UPDATE_COMPONENTS',
     'AGAPORNIS_API_VERSION', 'AGAPORNIS_FRONTEND_VERSION',
     'AGAPORNIS_API_RELEASE_MANIFEST_URL', 'AGAPORNIS_FRONTEND_RELEASE_MANIFEST_URL',
     'AGAPORNIS_AGENT_RELEASE_MANIFEST_URL',
@@ -48,6 +50,7 @@ async function main() {
     process.env.AGAPORNIS_PANEL_UPDATE_COMMAND = process.execPath;
     process.env.AGAPORNIS_PANEL_UPDATE_ARGS = '["-e",""]';
     process.env.AGAPORNIS_PANEL_UPDATE_COMMAND_CWD = process.cwd();
+    process.env.AGAPORNIS_PANEL_UPDATE_COMPONENTS = 'api,frontend';
     process.env.AGAPORNIS_API_VERSION = '1.0.0';
     delete process.env.AGAPORNIS_FRONTEND_VERSION;
     process.env.AGAPORNIS_API_RELEASE_MANIFEST_URL = `${origin}/api-manifest`;
@@ -64,6 +67,8 @@ async function main() {
     assert.equal(status.components.api.latestVersion, '2.0.0');
     assert.equal(status.components.frontend.latestVersion, '3.0.0');
     assert.equal(status.current.frontend, '1.5.0');
+    assert.deepEqual(status.managedComponents, ['api', 'frontend']);
+    assert.equal(status.deployableUpdateAvailable, true);
     assert.equal((await service.agentArtifact('linux-x86_64')).sha256, checksum(agentArtifact));
 
     const deployed = await service.deploy('1.5.0');
@@ -81,11 +86,32 @@ async function main() {
       targetVersions: { api: '2.0.0', frontend: '3.0.0' },
     }));
     assert.equal((await service.status(false, '3.0.0')).state.status, 'completed');
-    console.log('separate release manifests, checksums, staging, and native job test: PASS');
+
+    process.env.AGAPORNIS_PANEL_UPDATE_DIR = manualRoot;
+    delete process.env.AGAPORNIS_PANEL_UPDATE_COMMAND;
+    delete process.env.AGAPORNIS_PANEL_UPDATE_ARGS;
+    process.env.AGAPORNIS_PANEL_UPDATE_COMPONENTS = 'api';
+    process.env.AGAPORNIS_API_VERSION = '1.0.0';
+    const manualService = new SystemUpdateService(documents, redis);
+    await manualService.onModuleInit();
+    const manualStatus = await manualService.status(true, '1.5.0');
+    assert.equal(manualStatus.deployCommandConfigured, false);
+    assert.deepEqual(manualStatus.managedComponents, ['api']);
+    assert.equal(manualStatus.components.frontend.managed, false);
+    const manual = await manualService.deploy('1.5.0');
+    assert.equal(manual.state.status, 'staged');
+    assert.equal(manual.state.manualApplyRequired, true);
+    assert.match(manual.state.errorMessage, /must be applied manually/);
+    assert.equal(fs.existsSync(path.join(manualRoot, 'current-job.json')), true);
+    const manualJob = JSON.parse(fs.readFileSync(path.join(manualRoot, 'current-job.json'), 'utf8'));
+    assert.equal(manualJob.updates.api.version, '2.0.0');
+    assert.equal(manualJob.updates.frontend, undefined);
+    console.log('separate release manifests, managed components, checksums, staging, and native job test: PASS');
   } finally {
     server.close();
     await new Promise(resolve => setTimeout(resolve, 900));
     fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(manualRoot, { recursive: true, force: true });
     for (const name of variables) restore(name, previous[name]);
   }
 }

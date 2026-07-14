@@ -32,7 +32,7 @@ async function main() {
       },
       {
         agentRelease: async () => ({ version: '2.0.0', artifacts: { 'linux-x86_64': {} } }),
-        compareReleaseVersions: () => 1,
+        compareReleaseVersions: (latest, installed) => latest === installed ? 0 : 1,
         agentArtifact: async () => ({ url: 'https://updates.example/agent', sha256: 'a'.repeat(64) }),
       },
       new ApiConfigService(),
@@ -67,6 +67,12 @@ async function main() {
     const restart = await service.restart('node-1');
     assert.equal(restart.success, true);
     assert.equal(calls.at(-1).restart, true);
+
+    updateStatus = { ...updateStatus, version: '2.0.0' };
+    const current = await service.status();
+    assert.equal(current.agents[0].updateAvailable, false);
+    assert.equal(current.agents[0].canRestartUpdate, false);
+    await assert.rejects(() => service.restart('node-1'), /not newer than the installed version/);
 
     console.log('agent update validation tests: PASS');
   } finally {

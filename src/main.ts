@@ -17,6 +17,7 @@ import { installBrowserSecurity } from './modules/security/browser-security';
 import { ApiConfigService } from './common/config/config.service';
 import { DomainExceptionFilter } from './common/errors/domain-exception.filter';
 import { PanelLogger } from './common/logging/panel-logger';
+import { loadApiTlsOptions } from './common/config/api-tls';
 
 const panelLogger = new PanelLogger();
 
@@ -29,15 +30,17 @@ async function bootstrap() {
   if (clustered && !config.get('REDIS_URL').trim()) {
     throw new Error('Clustered API mode requires REDIS_URL for distributed jobs, locks, rate limits, and cache invalidation.');
   }
+  const tls = loadApiTlsOptions(config);
   const adapter = new FastifyAdapter({
     trustProxy: config.bool('TRUST_PROXY'),
-  });
+    ...(tls ? { https: tls } : {}),
+  } as any);
   adapter.getInstance().addContentTypeParser(
     'application/octet-stream',
     { bodyLimit: config.positiveInt('AGAPORNIS_MAX_FILE_UPLOAD_BYTES', 2 * 1024 * 1024 * 1024) },
     // Keep binary file uploads as a stream. Buffering the complete request
     // here would make every concurrent large upload resident in API memory.
-    (_request, payload, done) => done(null, payload),
+    (_request: any, payload: any, done: any) => done(null, payload),
   );
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
@@ -58,10 +61,11 @@ async function bootstrap() {
   });
 
   const port = config.int('PORT', 3000);
+  const host = config.get('API_HOST', '0.0.0.0');
 
-  await app.listen(port, '0.0.0.0');
+  await app.listen(port, host);
 
-  console.log(`Nest master HTTP/Fastify listening on ${port}`);
+  console.log(`Nest master ${tls ? 'HTTPS' : 'HTTP'}/Fastify listening on ${host}:${port}`);
 }
 
 bootstrap().catch(error => {

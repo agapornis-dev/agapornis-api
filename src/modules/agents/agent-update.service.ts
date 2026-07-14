@@ -26,15 +26,17 @@ export class AgentUpdateService {
         const data: any = await this.client.getUpdateStatus(agent.nodeId);
         const restartRequired = Boolean(data?.restart_required ?? data?.restartRequired);
         const pendingArtifact = String(data?.pending_artifact || data?.pendingArtifact || '').trim();
+        const installedVersion = String(data?.version || 'unknown');
+        const updateAvailable = agentRelease?.version
+          ? this.systemUpdates.compareReleaseVersions(agentRelease.version, installedVersion) > 0
+          : Boolean(envArtifactUrlConfigured);
         return {
           ...agent,
           available: manifestConfigured || envArtifactUrlConfigured,
           configuredArtifactUrl: manifestConfigured || envArtifactUrlConfigured,
           latestVersion: agentRelease?.version,
-          updateAvailable: agentRelease?.version
-            ? this.systemUpdates.compareReleaseVersions(agentRelease.version, data?.version || 'unknown') > 0
-            : Boolean(envArtifactUrlConfigured),
-          canRestartUpdate: restartRequired && Boolean(pendingArtifact),
+          updateAvailable,
+          canRestartUpdate: updateAvailable && restartRequired && Boolean(pendingArtifact),
           status: data,
         };
       } catch (error: any) {
@@ -76,6 +78,17 @@ export class AgentUpdateService {
     const pendingArtifact = String(status?.pending_artifact || status?.pendingArtifact || '').trim();
     if (!restartRequired || !pendingArtifact) {
       throw new BadRequestException('agent restart is allowed only when a verified update is staged and restart is pending');
+    }
+    try {
+      const release = await this.systemUpdates.agentRelease();
+      if (this.systemUpdates.compareReleaseVersions(release.version, status?.version || 'unknown') <= 0) {
+        throw new BadRequestException('the staged agent update is not newer than the installed version');
+      }
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      if (!this.config.get('AGAPORNIS_AGENT_UPDATE_URL')) {
+        throw new BadRequestException('the latest agent release could not be verified before restart');
+      }
     }
     const response: any = await this.client.restartForUpdate(nodeId);
     if (!response?.success) {
