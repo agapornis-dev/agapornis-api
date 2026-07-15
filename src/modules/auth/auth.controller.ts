@@ -330,11 +330,11 @@ export class AuthController {
       if (!user?.twoFactor?.enabled) throw new Error('two-factor authentication is not enabled');
       if (Number(challenge.ver) !== Number(user.sessionVersion || 0)) throw new Error('authentication challenge has been revoked');
       this.bans.assertAllowed({ userId: user.id, email: user.email, ip: this.bans.requestIp(req) });
-      this.twoFactor.enforceAttemptLimit(user.id);
+      await this.twoFactor.enforceAttemptLimit(user.id);
       if (!await this.verifySecondFactor(user, data.code)) {
         throw new Error('invalid authentication code');
       }
-      this.twoFactor.clearAttemptLimit(user.id);
+      await this.twoFactor.clearAttemptLimit(user.id);
       return this.completeLogin(user, req, 'auth.two_factor_login');
     } catch (error: any) {
       throw new HttpException(error.message || 'invalid authentication challenge', HttpStatus.UNAUTHORIZED);

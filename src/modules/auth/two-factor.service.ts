@@ -1,26 +1,47 @@
 import { Injectable } from '@nestjs/common';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
+import { RedisService } from '../redis/redis.service';
 import { SecurityMaterialService } from './security-material.service';
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const ATTEMPT_WINDOW_SECONDS = 5 * 60;
+const MAX_ATTEMPTS = 10;
 
 @Injectable()
 export class TwoFactorService {
   private readonly attempts = new Map<string, number[]>();
 
-  constructor(private readonly securityMaterial: SecurityMaterialService) {}
+  constructor(
+    private readonly securityMaterial: SecurityMaterialService,
+    private readonly redis: RedisService
+  ) {}
 
-  enforceAttemptLimit(key: string) {
+  async enforceAttemptLimit(key: string) {
+    const rateLimitKey = `two-factor:${key}`;
+    if (this.redis.enabled) {
+      const allowed = await this.redis.hitSlidingWindowRateLimit(
+        rateLimitKey,
+        ATTEMPT_WINDOW_SECONDS,
+        MAX_ATTEMPTS
+      );
+      if (!allowed) throw new Error('too many two-factor attempts, request a new login challenge');
+      return;
+    }
+
     const now = Date.now();
-    const attempts = (this.attempts.get(key) || []).filter(timestamp => now - timestamp < 5 * 60_000);
-    if (attempts.length >= 10) throw new Error('too many two-factor attempts, request a new login challenge');
+    const attempts = (this.attempts.get(key) || [])
+      .filter(timestamp => now - timestamp < ATTEMPT_WINDOW_SECONDS * 1000);
+    if (attempts.length >= MAX_ATTEMPTS) {
+      throw new Error('too many two-factor attempts, request a new login challenge');
+    }
     attempts.push(now);
     this.attempts.set(key, attempts);
   }
 
-  clearAttemptLimit(key: string) {
+  async clearAttemptLimit(key: string) {
     this.attempts.delete(key);
+    if (this.redis.enabled) await this.redis.clearRateLimit(`two-factor:${key}`);
   }
 
   createSetup(email: string, issuer: string) {

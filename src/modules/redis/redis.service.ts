@@ -63,6 +63,34 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return count <= maximum;
   }
 
+  async hitSlidingWindowRateLimit(name: string, windowSeconds: number, maximum: number): Promise<boolean> {
+    if (!this.enabled) return true;
+    const key = this.key(`rate:${tokenDigest(name)}`);
+    const result = await this.client!.eval(
+      `local time = redis.call('TIME')
+local now = (time[1] * 1000) + math.floor(time[2] / 1000)
+local window = tonumber(ARGV[1])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then
+  redis.call('PEXPIRE', KEYS[1], window)
+  return 0
+end
+redis.call('ZADD', KEYS[1], now, ARGV[3])
+redis.call('PEXPIRE', KEYS[1], window)
+return 1`,
+      {
+        keys: [key],
+        arguments: [String(windowSeconds * 1000), String(maximum), randomUUID()]
+      }
+    );
+    return Number(result) === 1;
+  }
+
+  async clearRateLimit(name: string) {
+    if (!this.enabled) return;
+    await this.client!.del(this.key(`rate:${tokenDigest(name)}`));
+  }
+
   async subscribe<T>(channel: string, listener: (value: T) => void): Promise<() => void> {
     if (!this.enabled || !this.subscriber) return () => undefined;
     const name = this.key(channel);

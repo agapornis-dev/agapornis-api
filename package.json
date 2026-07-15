@@ -28,6 +28,7 @@
     "test:data-leakage": "node scripts/data-leakage-test.cjs",
     "test:http-security": "node scripts/http-security-test.cjs",
     "test:security-upgrade": "node scripts/security-upgrade-test.cjs",
+    "test:two-factor-rate-limit": "node scripts/two-factor-rate-limit-test.cjs",
     "test:role-policy": "node scripts/role-policy-test.cjs",
     "test:settings-policy": "node scripts/settings-policy-test.cjs",
     "test:agent-update-rules": "node scripts/agent-update-rules-test.cjs",
