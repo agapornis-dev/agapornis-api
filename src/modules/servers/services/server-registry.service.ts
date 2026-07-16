@@ -12,6 +12,8 @@ const CLIENT_HIDDEN_RESOURCE_VARIABLES = new Set([
   'CPU_LIMIT',
   'CPU_CORES',
   'SERVER_IP',
+  'STARTUP',
+  'DOCKER_IMAGE',
   'SERVER_ID',
 ]);
 import { allowedDatabaseTypes, databasePortRangeMode } from './database-catalog';
@@ -484,7 +486,7 @@ export class ServerRegistryService implements OnModuleInit {
         if (provisioningOnly && status !== 'provisioning') throw new Error('server provisioning initialization requires provisioning status');
         if (!provisioningOnly && ['provisioning', 'deleting', 'transferring'].includes(status)) throw new Error(`server settings cannot change while ${status}`);
         const columns: Record<string, string> = {
-          variables: 'variables', memoryBytes: 'memory_bytes', cpuLimitPercentage: 'cpu_limit_percentage', cpuCores: 'cpu_cores', diskLimitBytes: 'disk_limit_bytes',
+          name: 'name', variables: 'variables', memoryBytes: 'memory_bytes', cpuLimitPercentage: 'cpu_limit_percentage', cpuCores: 'cpu_cores', diskLimitBytes: 'disk_limit_bytes',
           databasesEnabled: 'databases_enabled', databaseLimit: 'database_limit', databaseMemoryBytes: 'database_memory_bytes', databaseDiskLimitBytes: 'database_disk_limit_bytes',
           databaseCpuLimitPercentage: 'database_cpu_limit_percentage', databaseCpuCores: 'database_cpu_cores', databaseDockerImage: 'database_docker_image',
           allowedDatabaseTypes: 'allowed_database_types', databasePortRangeMode: 'database_port_range_mode',

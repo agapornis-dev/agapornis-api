@@ -72,6 +72,7 @@ export class EggsService implements OnModuleInit {
       description: egg.description,
       images: egg.images,
       dockerImages: egg.dockerImages,
+      startup: egg.startup,
       variables: includeVariables
         ? (privileged ? egg.variables : egg.variables.filter(variable => variable.userEditable))
         : [],

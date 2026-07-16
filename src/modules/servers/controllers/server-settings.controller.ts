@@ -5,7 +5,7 @@ import { EggsService } from '../../eggs/eggs.service';
 import { JwtAuthGuard } from '../../security/jwt-auth.guard';
 import { Roles } from '../../security/roles.decorator';
 import { RolesGuard } from '../../security/roles.guard';
-import { normalizeVariables } from '../utils/server-controller.helpers';
+import { envVarsToRecord, normalizeVariables } from '../utils/server-controller.helpers';
 import { ServerRegistryService } from '../services/server-registry.service';
 import { ServerRouteSupportService } from '../services/server-route-support.service';
 import { GameVersionCatalogService } from '../services/game-version-catalog.service';
@@ -176,6 +176,16 @@ export class ServerSettingsController {
     const canManageResources = this.support.canManageResources(req.user);
 
     const patch: any = {};
+    if (body?.name !== undefined) {
+      if (!this.registry.canManageAccess(server, req.user)) {
+        throw new HttpException('only the server owner or an administrator can rename this server', HttpStatus.FORBIDDEN);
+      }
+      const name = String(body.name).trim();
+      if (!name || name.length > 160) {
+        throw new HttpException('server name must contain between 1 and 160 characters', HttpStatus.BAD_REQUEST);
+      }
+      patch.name = name;
+    }
     let portMappingsToApply: Array<{ variable: string; internal_port: string; host_port: number }> | undefined;
     const hasEggPolicyPatch = body?.eggChangeAllowed !== undefined || body?.egg_change_allowed !== undefined || body?.allowedEggIds !== undefined || body?.allowed_egg_ids !== undefined;
     if (hasEggPolicyPatch) {
@@ -291,6 +301,7 @@ export class ServerSettingsController {
           HttpStatus.BAD_GATEWAY
         );
       }
+      patch.variables = envVarsToRecord(resolved.env_vars);
     }
 
     const updated = await this.registry.updateSettings(serverId, patch);

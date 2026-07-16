@@ -14,12 +14,14 @@ export function resolveServer(egg: EggDefinition, body: any): ResolvedEggServer 
   const env = { ...egg.environment };
   const primaryPort = String(body?.serverPort || body?.server_port || body?.port || valueForKey(provided, 'SERVER_PORT') || env.SERVER_PORT || 25565);
   const serverIp = String(body?.serverIp || body?.server_ip || valueForKey(provided, 'SERVER_IP') || env.SERVER_IP || '');
+  const dockerImage = resolveDockerImage(egg, body?.dockerImage || body?.docker_image || body?.image || valueForKey(provided, 'DOCKER_IMAGE'));
 
   env.SERVER_MEMORY = String(body?.memoryMb || body?.memory_mb || Math.floor(Number(body?.memoryBytes || body?.memory_bytes || 0) / 1024 / 1024) || env.SERVER_MEMORY || 1024);
   env.SERVER_DISK = String(body?.diskMb || body?.disk_mb || Math.floor(Number(body?.diskBytes || body?.disk_bytes || 0) / 1024 / 1024) || env.SERVER_DISK || 10240);
   env.SERVER_IP = serverIp;
   env.SERVER_PORT = primaryPort;
   env.SERVER_CPU = String(body?.cpuLimitPercentage || body?.cpu_limit_percentage || env.SERVER_CPU || 100);
+  env.DOCKER_IMAGE = dockerImage;
   delete env.SERVER_CPU_CORES;
   env.SERVER_ID = serverId;
 
@@ -40,6 +42,7 @@ export function resolveServer(egg: EggDefinition, body: any): ResolvedEggServer 
   env.SERVER_IP = serverIp;
   env.SERVER_PORT = primaryPort;
   env.SERVER_CPU = String(body?.cpuLimitPercentage || body?.cpu_limit_percentage || env.SERVER_CPU || 100);
+  env.DOCKER_IMAGE = dockerImage;
   delete env.SERVER_CPU_CORES;
   env.SERVER_ID = serverId;
 
@@ -52,7 +55,7 @@ export function resolveServer(egg: EggDefinition, body: any): ResolvedEggServer 
 
   return {
     server_id: serverId,
-    docker_image: resolveDockerImage(egg, body?.dockerImage || body?.docker_image || body?.image),
+    docker_image: dockerImage,
     internal_port: String(body?.internalPort || body?.internal_port || `${env.SERVER_PORT}/tcp`),
     env_vars: Object.entries(env).map(([key, value]) => `${key}=${value}`),
     memory_bytes: Number(body?.memoryBytes || body?.memory_bytes || Number(env.SERVER_MEMORY) * 1024 * 1024),

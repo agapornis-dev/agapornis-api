@@ -9,6 +9,8 @@ export class CreateServerFromEggDto {
   serverId?: string;
   server_id?: string;
   name?: string;
+  dockerImage?: string;
+  docker_image?: string;
   allowedEggIds?: string[];
   allowed_egg_ids?: string[];
   variables?: ServerVariablesDto;

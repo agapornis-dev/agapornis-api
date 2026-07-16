@@ -217,6 +217,29 @@ export class DatabaseMigrations {
     await this.ensureColumn('users', 'email_verified_at', timestamp);
     await this.ensureColumn('users', 'email_verification_pending', 'BOOLEAN NOT NULL DEFAULT FALSE');
     await this.ensureColumn('users', 'login_security', 'TEXT');
+    await this.widenTokenDigestColumns();
+  }
+
+  private async widenTokenDigestColumns() {
+    if (this.clientType === 'postgres') {
+      const invites = await this.queryFn(`SELECT character_maximum_length FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'registration_invites' AND column_name = 'token_hash'`);
+      if (Number(invites[0]?.character_maximum_length || 0) < 128) {
+        await this.queryFn('ALTER TABLE registration_invites ALTER COLUMN token_hash TYPE VARCHAR(128)');
+      }
+      const resets = await this.queryFn(`SELECT character_maximum_length FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'password_reset_tokens' AND column_name = 'token_hash'`);
+      if (Number(resets[0]?.character_maximum_length || 0) < 128) {
+        await this.queryFn('ALTER TABLE password_reset_tokens ALTER COLUMN token_hash TYPE VARCHAR(128)');
+      }
+      return;
+    }
+    const invites = await this.queryFn(`SELECT CHARACTER_MAXIMUM_LENGTH AS character_maximum_length FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'registration_invites' AND column_name = 'token_hash'`);
+    if (Number(invites[0]?.character_maximum_length || 0) < 128) {
+      await this.queryFn('ALTER TABLE registration_invites MODIFY COLUMN token_hash VARCHAR(128) NOT NULL');
+    }
+    const resets = await this.queryFn(`SELECT CHARACTER_MAXIMUM_LENGTH AS character_maximum_length FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'password_reset_tokens' AND column_name = 'token_hash'`);
+    if (Number(resets[0]?.character_maximum_length || 0) < 128) {
+      await this.queryFn('ALTER TABLE password_reset_tokens MODIFY COLUMN token_hash VARCHAR(128) NOT NULL');
+    }
   }
 
   async createPostgresConstraints() {

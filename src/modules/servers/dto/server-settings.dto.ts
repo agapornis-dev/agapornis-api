@@ -8,6 +8,7 @@ export class InstallServerVersionDto extends VersionSelectionDto {
 }
 
 export class UpdateServerSettingsDto {
+  name?: string;
   eggChangeAllowed?: boolean;
   egg_change_allowed?: boolean;
   allowedEggIds?: string[];

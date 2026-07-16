@@ -55,6 +55,10 @@ async function main() {
     assert.ok(upgradeSql.some(sql => new RegExp(`ALTER TABLE server_plans ADD COLUMN IF NOT EXISTS ${column}`, 'i').test(sql)),
       `existing server_plans tables must add ${column}`);
   }
+  assert.ok(upgradeSql.some(sql => /ALTER TABLE registration_invites ALTER COLUMN token_hash TYPE VARCHAR\(128\)/i.test(sql)),
+    'existing registration invite hashes must be widened for SHA3-512');
+  assert.ok(upgradeSql.some(sql => /ALTER TABLE password_reset_tokens ALTER COLUMN token_hash TYPE VARCHAR\(128\)/i.test(sql)),
+    'existing password reset hashes must be widened for SHA3-512');
 
   // Test relational round-trip: replace and load should produce domain objects from columns
   const statements = [];

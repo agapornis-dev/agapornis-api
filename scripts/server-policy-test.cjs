@@ -6,6 +6,7 @@ const { ServerRegistryService } = require('../src/modules/servers/services/serve
 const { ServerDatabasesService } = require('../src/modules/servers/services/server-databases.service.ts');
 const { ServerFilesController } = require('../src/modules/servers/controllers/server-files.controller.ts');
 const { ServersController } = require('../src/modules/servers/controllers/servers.controller.ts');
+const { ServerSettingsController } = require('../src/modules/servers/controllers/server-settings.controller.ts');
 const { createServerRequest } = require('../src/modules/servers/utils/server-controller.helpers.ts');
 const { resolveServer } = require('../src/modules/eggs/egg-resolver.ts');
 
@@ -88,7 +89,11 @@ async function main() {
     name: 'Startup variable test',
     description: '',
     nestId: 'test',
-    images: ['example/server:latest'],
+    images: ['example/server:latest', 'example/server:selected'],
+    dockerImages: [
+      { label: 'Default', image: 'example/server:latest' },
+      { label: 'Selected', image: 'example/server:selected' }
+    ],
     environment: {},
     variables: [],
     startup: 'run --memory {{SERVER_MEMORY}} --ip {{SERVER_IP}} --port {{SERVER_PORT}} --custom {{CUSTOM_CREATED}}',
@@ -100,13 +105,76 @@ async function main() {
     memoryMb: 4096,
     serverIp: 'node.example.test',
     serverPort: 25565,
-    variables: { CUSTOM_CREATED: 'custom-value', SERVER_IP: 'spoofed.example.test' }
+    dockerImage: 'example/server:selected',
+    variables: { CUSTOM_CREATED: 'custom-value', SERVER_IP: 'spoofed.example.test', DOCKER_IMAGE: 'example/server:latest' }
   });
   assert.equal(
     resolvedStartup.startup_command,
     'run --memory 4096 --ip node.example.test --port 25565 --custom custom-value',
     'startup must resolve resource, node, port, and custom server variables'
   );
+  const resolvedEnvironment = Object.fromEntries(resolvedStartup.env_vars.map(entry => entry.split(/=(.*)/s).slice(0, 2)));
+  assert.equal(resolvedEnvironment.STARTUP, resolvedStartup.startup_command, 'generated STARTUP must match the resolved command');
+  assert.equal(resolvedEnvironment.DOCKER_IMAGE, 'example/server:selected', 'the explicitly selected container image must be retained');
+  assert.equal(resolvedStartup.docker_image, 'example/server:selected');
+
+  const settingsServer = {
+    id: 'server-1', nodeId: 'node-1', name: 'Original name', eggId: 'startup-variable-test', status: 'created',
+    memoryBytes: 2048 * 1024 * 1024, cpuLimitPercentage: 100, diskLimitBytes: 10240 * 1024 * 1024,
+    assignedHostPort: 30001,
+    variables: {
+      SERVER_MEMORY: '2048', SERVER_PORT: '25565', SERVER_IP: 'node.example.test',
+      DOCKER_IMAGE: 'example/server:selected', CUSTOM_CREATED: 'custom-value', STARTUP: 'stale startup'
+    },
+    createdAt: new Date().toISOString()
+  };
+  let savedSettingsPatch;
+  let runtimeConfiguration;
+  const settingsRegistry = {
+    canManageAccess: () => true,
+    updateSettings: async (_id, patch) => {
+      savedSettingsPatch = patch;
+      return { ...settingsServer, ...patch };
+    },
+    forUser: server => server
+  };
+  const settingsSupport = {
+    requireNotSupport: () => undefined,
+    requireNodeServerPermission: async () => settingsServer,
+    canManageResources: () => true,
+    resourcePatch: body => support.resourcePatch(body),
+    mergeResourceVariables: (variables, patch) => support.mergeResourceVariables(variables, patch),
+    hasLiveResourcePatch: patch => support.hasLiveResourcePatch(patch),
+    databasePatch: () => ({}),
+    agentPortMappings: () => [],
+    clientIp: () => undefined
+  };
+  const settingsController = new ServerSettingsController(
+    {
+      updateServerResources: async () => ({ success: true }),
+      updateServerConfiguration: async (_nodeId, request) => { runtimeConfiguration = request; return { success: true }; }
+    },
+    {
+      resolveServer: (_eggId, body) => resolveServer({
+        id: 'startup-variable-test', name: 'Startup variable test', description: '', nestId: 'test',
+        images: ['example/server:selected'], environment: {}, variables: [],
+        startup: 'java -Xmx{{SERVER_MEMORY}}M -jar {{CUSTOM_CREATED}}.jar', stopCommand: '', startupDone: '', configFiles: {}
+      }, body)
+    },
+    settingsRegistry,
+    { log: () => undefined },
+    settingsSupport,
+    {},
+    {},
+    { connectionHost: () => 'node.example.test' }
+  );
+  await settingsController.updateSettings('node-1', 'server-1', { memoryMb: 4096 }, { user: { id: 'admin-1', role: 'admin', email: 'admin@example.test' } });
+  assert.equal(runtimeConfiguration.startup_command, 'java -Xmx4096M -jar custom-value.jar');
+  assert.equal(savedSettingsPatch.variables.STARTUP, runtimeConfiguration.startup_command, 'resource updates must persist the newly resolved STARTUP value');
+  assert.equal(savedSettingsPatch.variables.SERVER_MEMORY, '4096');
+  await settingsController.updateSettings('node-1', 'server-1', { name: 'Renamed display' }, { user: { id: 'admin-1', role: 'admin', email: 'admin@example.test' } });
+  assert.equal(savedSettingsPatch.name, 'Renamed display');
+  assert.equal(settingsServer.id, 'server-1', 'renaming must not change the server UUID');
 
   const createRequest = createServerRequest({ serverId: 'create-resource-test', cpuLimitPercentage: 250, cpuCores: 8, cpuPinnedThreads: '0,2-3', swapMemoryMb: 1024, swapMemoryStorage: 'general' });
   assert.equal(createRequest.cpu_limit_percentage, 250, 'create must preserve percentage semantics');

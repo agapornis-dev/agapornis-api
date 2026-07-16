@@ -46,4 +46,4 @@ export interface ServerAccess {
   permissions: ServerPermissionScope[];
 }
 
-export type ServerSettingsPatch = Partial<Pick<ServerRecord, 'variables' | 'memoryBytes' | 'cpuLimitPercentage' | 'cpuCores' | 'diskLimitBytes' | 'databasesEnabled' | 'databaseLimit' | 'databaseMemoryBytes' | 'databaseDiskLimitBytes' | 'databaseCpuLimitPercentage' | 'databaseCpuCores' | 'databaseDockerImage' | 'allowedDatabaseTypes' | 'databasePortRangeMode' | 'databasePortRangeStart' | 'databasePortRangeEnd' | 'backupLimit' | 'eggChangeAllowed' | 'allowedEggIds'>>;
+export type ServerSettingsPatch = Partial<Pick<ServerRecord, 'name' | 'variables' | 'memoryBytes' | 'cpuLimitPercentage' | 'cpuCores' | 'diskLimitBytes' | 'databasesEnabled' | 'databaseLimit' | 'databaseMemoryBytes' | 'databaseDiskLimitBytes' | 'databaseCpuLimitPercentage' | 'databaseCpuCores' | 'databaseDockerImage' | 'allowedDatabaseTypes' | 'databasePortRangeMode' | 'databasePortRangeStart' | 'databasePortRangeEnd' | 'backupLimit' | 'eggChangeAllowed' | 'allowedEggIds'>>;
