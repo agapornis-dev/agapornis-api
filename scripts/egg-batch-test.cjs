@@ -21,6 +21,15 @@ const egg = name => ({
   startup: './server'
 });
 
+const garrysMod = service.normalize(egg('Garrys Mod'));
+service.eggs.set(garrysMod.id, garrysMod);
+assert.equal(garrysMod.id, 'garrys-mod');
+assert.equal(
+  service.catalog().find(item => item.id === 'garrys-mod').installed,
+  true,
+  'the Garrys Mod catalog entry must recognize the normalized upstream egg id'
+);
+
 const imported = service.importMany([egg('Batch Test One'), egg('Batch Test Two')]);
 assert.equal(imported.length, 2);
 assert.equal(saveCalls, 1, 'a valid batch should be persisted once');

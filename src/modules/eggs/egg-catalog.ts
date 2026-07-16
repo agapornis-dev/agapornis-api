@@ -42,7 +42,7 @@ export const EGG_CATALOG: EggCatalogItem[] = [
     sourceUrl: 'https://raw.githubusercontent.com/pterodactyl/game-eggs/main/enshrouded/egg-enshrouded.json'
   },
   {
-    id: 'garrys-mod', eggId: 'garry-s-mod', name: "Garry's Mod", category: 'Source games',
+    id: 'garrys-mod', eggId: 'garrys-mod', name: "Garry's Mod", category: 'Source games',
     description: "Garry's Mod dedicated server maintained by the Pterodactyl game-eggs community.",
     sourceUrl: 'https://raw.githubusercontent.com/pterodactyl/game-eggs/main/gmod/egg-garry-s-mod.json'
   },

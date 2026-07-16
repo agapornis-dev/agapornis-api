@@ -170,6 +170,11 @@ export class ServerRuntimeController {
 
     res.flushHeaders?.();
 
+    // Push enough data to cross buffering thresholds in intermediary proxies
+    // immediately. The frame is an SSE comment, so browsers ignore it.
+    res.write(`: ${' '.repeat(2048)}\n\n`);
+    (res as any).flush?.();
+
     const canWrite = () => !closed && !res.destroyed && !res.writableEnded;
     const heartbeat = setInterval(() => {
       if (canWrite() && !backpressured) {
@@ -184,6 +189,7 @@ export class ServerRuntimeController {
       backpressured = !res.write(
         `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`,
       );
+      (res as any).flush?.();
     };
 
     res.on('drain', () => {

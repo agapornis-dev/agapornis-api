@@ -161,6 +161,16 @@ export class AgentClientService {
     );
   }
 
+  updateServerConfiguration(nodeId: string, configuration: any, token?: string) {
+    return this.callServer(
+      nodeId,
+      'UpdateServerConfiguration',
+      configuration,
+      token,
+      UPDATE_TIMEOUT_MS
+    );
+  }
+
   getNodeStats(nodeId: string, token?: string) {
     return this.callServer(
       nodeId,

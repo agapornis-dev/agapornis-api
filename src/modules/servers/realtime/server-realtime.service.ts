@@ -91,8 +91,8 @@ export class ServerRealtimeService implements OnModuleDestroy {
     this.statsStartDelayMs = Math.max(0, config.int('SERVER_STATS_STREAM_START_DELAY_MS', 75));
     this.consoleHistoryLimit = config.positiveInt('SERVER_CONSOLE_HISTORY_LIMIT', 500);
     this.consoleHistoryCharacterLimit = config.positiveInt('SERVER_CONSOLE_HISTORY_CHARACTER_LIMIT', 512 * 1024);
-    this.consoleStartDelayMs = Math.max(0, config.int('SERVER_CONSOLE_STREAM_START_DELAY_MS', 150));
-    this.consoleBatchDelayMs = Math.max(0, config.int('SERVER_CONSOLE_BATCH_DELAY_MS', 25));
+    this.consoleStartDelayMs = Math.max(0, config.int('SERVER_CONSOLE_STREAM_START_DELAY_MS', 25));
+    this.consoleBatchDelayMs = Math.max(0, config.int('SERVER_CONSOLE_BATCH_DELAY_MS', 10));
     this.consoleBatchEntryLimit = config.positiveInt('SERVER_CONSOLE_BATCH_ENTRY_LIMIT', 16);
     this.consoleBatchCharacterLimit = config.positiveInt('SERVER_CONSOLE_BATCH_CHARACTER_LIMIT', 12 * 1024);
     this.statsDisconnectGraceMs = config.positiveInt('SERVER_STATS_DISCONNECT_GRACE_MS', 5_000);

@@ -16,6 +16,7 @@ service ServerManagement {
   rpc DeleteServer (ServerActionRequest) returns (ServerActionResponse);
   rpc UpdateServerResources (UpdateServerResourcesRequest) returns (ServerActionResponse);
   rpc UpdateServerPorts (UpdateServerPortsRequest) returns (ServerActionResponse);
+  rpc UpdateServerConfiguration (UpdateServerConfigurationRequest) returns (ServerActionResponse);
   rpc GetNodeStats (NodeStatsRequest) returns (NodeStatsResponse);
   rpc GetCrowdSecAlerts (CrowdSecAlertsRequest) returns (CrowdSecAlertsResponse);
   rpc GetServerStats (ServerActionRequest) returns (ServerMetricsResponse);
@@ -115,6 +116,14 @@ message UpdateServerResourcesRequest {
 message UpdateServerPortsRequest {
   string server_id = 1;
   repeated PortMapping port_mappings = 2;
+}
+message UpdateServerConfigurationRequest {
+  string server_id = 1;
+  repeated string env_vars = 2;
+  string startup_command = 3;
+  string stop_command = 4;
+  string startup_done = 5;
+  string config_files_json = 6;
 }
 
 message ServerMetricsResponse {

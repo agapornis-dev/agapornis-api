@@ -256,6 +256,39 @@ export class ServerSettingsController {
       }
     }
 
+    if (body?.variables || Object.keys(resourcePatch).length > 0) {
+      if (!server.eggId) {
+        throw new HttpException('server egg configuration is missing', HttpStatus.CONFLICT);
+      }
+      const variables = patch.variables ?? server.variables ?? {};
+      const resolved = this.eggs.resolveServer(server.eggId, {
+        serverId,
+        name: server.name || serverId,
+        memoryBytes: patch.memoryBytes ?? server.memoryBytes,
+        cpuLimitPercentage: patch.cpuLimitPercentage ?? server.cpuLimitPercentage,
+        cpuCores: patch.cpuCores ?? server.cpuCores,
+        diskLimitBytes: patch.diskLimitBytes ?? server.diskLimitBytes,
+        serverPort: variables.SERVER_PORT,
+        hostPort: server.assignedHostPort,
+        variables,
+        portMappings: this.support.agentPortMappings({ ...server, variables })
+      });
+      const response: any = await this.client.updateServerConfiguration(server.nodeId, {
+        server_id: serverId,
+        env_vars: resolved.env_vars,
+        startup_command: resolved.startup_command,
+        stop_command: resolved.stop_command,
+        startup_done: resolved.startup_done,
+        config_files_json: resolved.config_files_json
+      });
+      if (response?.success === false) {
+        throw new HttpException(
+          response?.error_message || response?.errorMessage || 'agent rejected runtime configuration update',
+          HttpStatus.BAD_GATEWAY
+        );
+      }
+    }
+
     const updated = await this.registry.updateSettings(serverId, patch);
     if (!updated) throw new HttpException('server not found', HttpStatus.NOT_FOUND);
 
