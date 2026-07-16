@@ -115,6 +115,7 @@ export class ServersController {
         progress?.('resolving-template', 32, 'Resolving the egg template and install variables');
         const resolved = this.eggs.resolveServer(eggId, {
           ...body,
+          serverIp: this.agents.connectionHost(id),
           port: allocatedPort,
           hostPort: allocatedPort,
           variables: { ...normalizeVariables(body?.variables || body?.env || {}), ...(reservation.record.variables || {}) },
@@ -446,6 +447,7 @@ export class ServersController {
       serverId,
       name: server.name || serverId,
       ownerUserId: server.ownerUserId,
+      serverIp: this.agents.connectionHost(id),
       memoryBytes: server.memoryBytes,
       cpuLimitPercentage: server.cpuLimitPercentage,
       cpuCores: server.cpuCores,
@@ -515,23 +517,28 @@ export class ServersController {
     const server = await this.support.requireNodeServerAccess(id, serverId, req.user);
     const isStaff = ['owner', 'admin'].includes(req.user?.role);
     const provisioningRecovery = server.status === 'provisioning' && body?.forceProvisioningCleanup === true;
+    const databaseOnlyCleanup = body?.forceDatabaseCleanup === true || body?.force_database_cleanup === true;
     if (!isStaff) {
       throw new HttpException('only owners and administrators can delete servers', HttpStatus.FORBIDDEN);
     }
     const claim = await this.registry.claimDeletion(serverId, provisioningRecovery);
     if (!claim) throw new HttpException('server not found', HttpStatus.NOT_FOUND);
-    if (claim.replay) return { success: true, idempotentReplay: true };
+    if (claim.replay && !databaseOnlyCleanup) return { success: true, idempotentReplay: true };
     try {
-      await this.databases.deleteAllForServer(serverId);
+      const localCleanup = databaseOnlyCleanup || provisioningRecovery;
+      await this.databases.deleteAllForServer(serverId, { skipAgent: localCleanup });
       let resp: any;
-      try {
+      if (localCleanup) {
+        resp = {
+          success: true,
+          recoveryCleanup: true,
+          databaseOnlyCleanup,
+          message: databaseOnlyCleanup
+            ? 'server metadata removed without contacting the unavailable node'
+            : 'stuck provisioning record removed without agent cleanup'
+        };
+      } else {
         resp = await this.support.forward('delete-server', id, serverId, () => this.client.deleteServer(id, serverId));
-      } catch (error) {
-        if (!provisioningRecovery) throw error;
-        resp = { success: true, recoveryCleanup: true, message: 'stuck provisioning record removed; agent cleanup was unavailable' };
-      }
-      if (provisioningRecovery && !resp.success) {
-        resp = { success: true, recoveryCleanup: true, message: 'stuck provisioning record removed after the agent reported no deletable server' };
       }
       if (!resp.success) {
         await this.registry.restoreDeletion(serverId, server.status);
@@ -540,13 +547,15 @@ export class ServersController {
       await this.registry.remove(serverId);
       await this.support.dispatchServerEvent('server.deleted', id, serverId, 'deleted');
       this.activityLog.log({
-        event: provisioningRecovery ? 'server.provisioning_cleanup' : 'server.deleted',
-        userId: req.user?.id, userEmail: req.user?.email, serverId, nodeId: id, ip: this.support.clientIp(req)
+        event: databaseOnlyCleanup ? 'server.database_cleanup' : provisioningRecovery ? 'server.provisioning_cleanup' : 'server.deleted',
+        userId: req.user?.id, userEmail: req.user?.email, serverId, nodeId: id, ip: this.support.clientIp(req),
+        meta: databaseOnlyCleanup ? { nodeCleanupSkipped: true } : undefined
       });
       await this.activityLog.pruneByServerId(serverId);
       return {
         success: true,
-        ...(provisioningRecovery ? { recoveryCleanup: true } : {})
+        ...((provisioningRecovery || databaseOnlyCleanup) ? { recoveryCleanup: true } : {}),
+        ...(databaseOnlyCleanup ? { databaseOnlyCleanup: true } : {})
       };
     } catch (error) {
       await this.registry.restoreDeletion(serverId, server.status);

@@ -109,8 +109,20 @@ export class ServerDatabasesService implements OnModuleInit {
     }
   }
 
-  async deleteAllForServer(serverId: string) {
+  async deleteAllForServer(serverId: string, options: { skipAgent?: boolean } = {}) {
     const databases = await this.listServerDatabases(serverId);
+    if (options.skipAgent) {
+      if (this.database.enabled) {
+        await this.database.query(
+          `DELETE FROM server_databases WHERE server_id = ${this.database.placeholders(1)}`,
+          [serverId]
+        );
+      } else {
+        for (const database of databases) this.databases.delete(database.id);
+        this.saveDatabases();
+      }
+      return { deleted: databases.map((database: ServerDatabase) => database.id), count: databases.length };
+    }
     const deleted: string[] = [];
     for (const database of databases) {
       await this.deleteServerDatabase(serverId, database.id);

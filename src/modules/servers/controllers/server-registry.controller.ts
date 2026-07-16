@@ -152,6 +152,7 @@ export class ServerRegistryController {
         progress?.('resolving-template', 32, 'Resolving the egg template and install variables');
         const resolved = this.eggs.resolveServer(eggId, {
           ...body,
+          serverIp: this.agents.connectionHost(placement.nodeId),
           port: allocatedPort,
           hostPort: allocatedPort,
           variables: { ...(body?.variables || {}), ...(reservation.record.variables || {}) },

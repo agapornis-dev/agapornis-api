@@ -11,6 +11,7 @@ const CLIENT_HIDDEN_RESOURCE_VARIABLES = new Set([
   'SERVER_CPU_CORES',
   'CPU_LIMIT',
   'CPU_CORES',
+  'SERVER_IP',
   'SERVER_ID',
 ]);
 import { allowedDatabaseTypes, databasePortRangeMode } from './database-catalog';

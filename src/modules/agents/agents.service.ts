@@ -95,9 +95,11 @@ export class AgentsService implements OnModuleInit, OnModuleDestroy {
 
   connectionAddress(nodeId: string, port?: number) {
     if (!port) return '';
-    const agent = this.registry.get(nodeId);
-    const host = this.publicHost(agent) || nodeId;
-    return `${host}:${port}`;
+    return `${this.connectionHost(nodeId)}:${port}`;
+  }
+
+  connectionHost(nodeId: string) {
+    return this.publicHost(this.registry.get(nodeId)) || nodeId;
   }
 
   async register(entry: AgentEntry) {

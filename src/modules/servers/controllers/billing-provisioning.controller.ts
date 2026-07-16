@@ -269,6 +269,7 @@ export class BillingProvisioningController {
     }
     const allocatedPort = allocatedRecord.assignedHostPort!;
     requestBody.hostPort = allocatedPort;
+    requestBody.serverIp = this.agents.connectionHost(nodeId);
     requestBody.variables = { ...requestBody.variables, ...(allocatedRecord.variables || {}) };
     requestBody.portMappings = this.registry.portMappings(allocatedRecord.variables).map(mapping => ({
       variable: mapping.variable,

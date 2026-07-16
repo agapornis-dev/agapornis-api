@@ -56,4 +56,6 @@ export class ChangeServerEggDto {
 
 export class DeleteServerDto {
   forceProvisioningCleanup?: boolean;
+  forceDatabaseCleanup?: boolean;
+  force_database_cleanup?: boolean;
 }

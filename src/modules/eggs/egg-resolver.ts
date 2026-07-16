@@ -13,9 +13,11 @@ export function resolveServer(egg: EggDefinition, body: any): ResolvedEggServer 
   const provided = normalizeValues(body?.variables || body?.env || {});
   const env = { ...egg.environment };
   const primaryPort = String(body?.serverPort || body?.server_port || body?.port || valueForKey(provided, 'SERVER_PORT') || env.SERVER_PORT || 25565);
+  const serverIp = String(body?.serverIp || body?.server_ip || valueForKey(provided, 'SERVER_IP') || env.SERVER_IP || '');
 
   env.SERVER_MEMORY = String(body?.memoryMb || body?.memory_mb || Math.floor(Number(body?.memoryBytes || body?.memory_bytes || 0) / 1024 / 1024) || env.SERVER_MEMORY || 1024);
   env.SERVER_DISK = String(body?.diskMb || body?.disk_mb || Math.floor(Number(body?.diskBytes || body?.disk_bytes || 0) / 1024 / 1024) || env.SERVER_DISK || 10240);
+  env.SERVER_IP = serverIp;
   env.SERVER_PORT = primaryPort;
   env.SERVER_CPU = String(body?.cpuLimitPercentage || body?.cpu_limit_percentage || env.SERVER_CPU || 100);
   delete env.SERVER_CPU_CORES;
@@ -35,6 +37,7 @@ export function resolveServer(egg: EggDefinition, body: any): ResolvedEggServer 
 
   env.SERVER_MEMORY = String(body?.memoryMb || body?.memory_mb || Math.floor(Number(body?.memoryBytes || body?.memory_bytes || 0) / 1024 / 1024) || env.SERVER_MEMORY || 1024);
   env.SERVER_DISK = String(body?.diskMb || body?.disk_mb || Math.floor(Number(body?.diskBytes || body?.disk_bytes || 0) / 1024 / 1024) || env.SERVER_DISK || 10240);
+  env.SERVER_IP = serverIp;
   env.SERVER_PORT = primaryPort;
   env.SERVER_CPU = String(body?.cpuLimitPercentage || body?.cpu_limit_percentage || env.SERVER_CPU || 100);
   delete env.SERVER_CPU_CORES;
@@ -104,6 +107,7 @@ function valueForPlaceholder(key: string, env: Record<string, string>) {
   const normalized = key.trim().replace(/^env\./i, '').toUpperCase();
   const aliases: Record<string, string> = {
     'SERVER.BUILD.DEFAULT.PORT': 'SERVER_PORT',
+    'SERVER.BUILD.DEFAULT.IP': 'SERVER_IP',
     'SERVER.BUILD.MEMORY': 'SERVER_MEMORY',
     'SERVER.BUILD.DISK': 'SERVER_DISK',
     'SERVER.BUILD.CPU': 'SERVER_CPU',

@@ -10,6 +10,7 @@ import { ServerRegistryService } from '../services/server-registry.service';
 import { ServerRouteSupportService } from '../services/server-route-support.service';
 import { GameVersionCatalogService } from '../services/game-version-catalog.service';
 import { ServerDatabasesService } from '../services/server-databases.service';
+import { AgentsService } from '../../agents/agents.service';
 import { InstallServerVersionDto, UpdateServerSettingsDto } from '../dto/server-settings.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -22,7 +23,8 @@ export class ServerSettingsController {
     private readonly activityLog: ActivityLogService,
     private readonly support: ServerRouteSupportService,
     private readonly versions: GameVersionCatalogService,
-    private readonly databases: ServerDatabasesService
+    private readonly databases: ServerDatabasesService,
+    private readonly agents: AgentsService
   ) {}
 
   @Get(':serverId/version-catalog')
@@ -86,6 +88,7 @@ export class ServerSettingsController {
       const variables = { ...(server.variables || {}), ...variablePatch };
       const resolved = this.eggs.resolveServer(eggId, {
         serverId,
+        serverIp: this.agents.connectionHost(server.nodeId),
         name: server.name || serverId,
         memoryBytes: server.memoryBytes,
         cpuLimitPercentage: server.cpuLimitPercentage,
@@ -263,6 +266,7 @@ export class ServerSettingsController {
       const variables = patch.variables ?? server.variables ?? {};
       const resolved = this.eggs.resolveServer(server.eggId, {
         serverId,
+        serverIp: this.agents.connectionHost(server.nodeId),
         name: server.name || serverId,
         memoryBytes: patch.memoryBytes ?? server.memoryBytes,
         cpuLimitPercentage: patch.cpuLimitPercentage ?? server.cpuLimitPercentage,

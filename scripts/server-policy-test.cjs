@@ -7,6 +7,7 @@ const { ServerDatabasesService } = require('../src/modules/servers/services/serv
 const { ServerFilesController } = require('../src/modules/servers/controllers/server-files.controller.ts');
 const { ServersController } = require('../src/modules/servers/controllers/servers.controller.ts');
 const { createServerRequest } = require('../src/modules/servers/utils/server-controller.helpers.ts');
+const { resolveServer } = require('../src/modules/eggs/egg-resolver.ts');
 
 async function main() {
   let reserved;
@@ -21,6 +22,7 @@ async function main() {
     SERVER_ID: 'server-1',
     SERVER_PORT: '25565',
     SERVER_MEMORY: '2048',
+    SERVER_IP: 'node.example.test',
     PUBLIC_SETTING: 'old',
     INTERNAL_SECRET: 'keep'
   };
@@ -44,6 +46,8 @@ async function main() {
     () => support.applyVariableUpdate({ SERVER_ID: 'changed' }, existing, editable, { role: 'admin' }),
     /managed by the panel/
   );
+  const protectedIpUpdate = support.applyVariableUpdate({ SERVER_IP: 'spoofed.example.test' }, existing, editable, { role: 'admin' });
+  assert.equal(protectedIpUpdate.SERVER_IP, 'node.example.test', 'SERVER_IP must remain panel-managed');
 
   const adminUpdate = support.applyVariableUpdate({ PUBLIC_SETTING: 'admin' }, existing, editable, { role: 'admin' });
   assert.equal(adminUpdate.SERVER_ID, 'server-1');
@@ -78,6 +82,31 @@ async function main() {
   assert.equal(resourceVariables.AGAPORNIS_CPU_PINNED_THREADS, '2-4,6');
   assert.equal(resourceVariables.AGAPORNIS_SWAP_MEMORY_MB, '512');
   assert.equal(resourceVariables.AGAPORNIS_SWAP_MEMORY_STORAGE, 'server');
+
+  const resolvedStartup = resolveServer({
+    id: 'startup-variable-test',
+    name: 'Startup variable test',
+    description: '',
+    nestId: 'test',
+    images: ['example/server:latest'],
+    environment: {},
+    variables: [],
+    startup: 'run --memory {{SERVER_MEMORY}} --ip {{SERVER_IP}} --port {{SERVER_PORT}} --custom {{CUSTOM_CREATED}}',
+    stopCommand: '',
+    startupDone: '',
+    configFiles: {}
+  }, {
+    serverId: 'server-1',
+    memoryMb: 4096,
+    serverIp: 'node.example.test',
+    serverPort: 25565,
+    variables: { CUSTOM_CREATED: 'custom-value', SERVER_IP: 'spoofed.example.test' }
+  });
+  assert.equal(
+    resolvedStartup.startup_command,
+    'run --memory 4096 --ip node.example.test --port 25565 --custom custom-value',
+    'startup must resolve resource, node, port, and custom server variables'
+  );
 
   const createRequest = createServerRequest({ serverId: 'create-resource-test', cpuLimitPercentage: 250, cpuCores: 8, cpuPinnedThreads: '0,2-3', swapMemoryMb: 1024, swapMemoryStorage: 'general' });
   assert.equal(createRequest.cpu_limit_percentage, 250, 'create must preserve percentage semantics');
@@ -203,6 +232,40 @@ async function main() {
   );
   assert.equal(manualServer.status, 'stopped');
   assert.equal(manualServer.variables.AGAPORNIS_FROZEN, undefined);
+
+  let nodeDeleteCalls = 0;
+  let databaseCleanupOptions;
+  let removedServerId;
+  const unavailableServer = { id: 'offline-server', nodeId: 'offline-node', status: 'created', variables: {} };
+  const offlineDeletionController = new ServersController(
+    { deleteServer: async () => { nodeDeleteCalls += 1; } },
+    {},
+    {
+      claimDeletion: async () => ({ record: unavailableServer, replay: false, previousStatus: 'created' }),
+      remove: async id => { removedServerId = id; },
+      restoreDeletion: async () => undefined,
+    },
+    { log: () => undefined, pruneByServerId: async () => undefined },
+    {
+      requireNodeServerAccess: async () => unavailableServer,
+      dispatchServerEvent: async () => undefined,
+      clientIp: () => '127.0.0.1',
+    },
+    {}, {}, {}, {},
+    { deleteAllForServer: async (_id, options) => { databaseCleanupOptions = options; } },
+    {}, {}
+  );
+  const databaseCleanup = await offlineDeletionController.deleteServer(
+    'offline-node',
+    'offline-server',
+    { forceDatabaseCleanup: true },
+    { user: { id: 'admin-1', role: 'admin' } }
+  );
+  assert.equal(databaseCleanup.success, true);
+  assert.equal(databaseCleanup.databaseOnlyCleanup, true);
+  assert.equal(databaseCleanupOptions.skipAgent, true, 'database-only deletion must not contact database containers on an offline node');
+  assert.equal(nodeDeleteCalls, 0, 'database-only deletion must not contact the offline game-server container');
+  assert.equal(removedServerId, 'offline-server');
 
   const allocationRegistry = Object.create(ServerRegistryService.prototype);
   allocationRegistry.database = { clientType: 'json' };

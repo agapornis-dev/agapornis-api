@@ -186,6 +186,7 @@ export class ServerTransferController {
       if (server.eggId) {
         const resolved = this.eggs.resolveServer(server.eggId, {
           serverId,
+          serverIp: this.agents.connectionHost(targetNodeId),
           variables: server.variables || {},
           memoryBytes: server.memoryBytes,
           cpuLimitPercentage: Number(server.cpuCores || 0) > 0 ? Number(server.cpuCores) * 100 : server.cpuLimitPercentage,
