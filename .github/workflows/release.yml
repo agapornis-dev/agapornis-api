@@ -37,7 +37,8 @@ jobs:
         run: |
           mkdir -p dist
           git archive --format=tar.gz --output=dist/agapornis-api-source.tar.gz HEAD
-          sha256sum dist/agapornis-api-source.tar.gz > dist/agapornis-api-source.tar.gz.sha256
+          cd dist
+          sha256sum agapornis-api-source.tar.gz > agapornis-api-source.tar.gz.sha256
 
       - name: Create release manifest
         run: node .github/scripts/create-release-manifest.cjs

@@ -117,6 +117,20 @@ async function main() {
   assert.equal(resolvedEnvironment.STARTUP, resolvedStartup.startup_command, 'generated STARTUP must match the resolved command');
   assert.equal(resolvedEnvironment.DOCKER_IMAGE, 'example/server:selected', 'the explicitly selected container image must be retained');
   assert.equal(resolvedStartup.docker_image, 'example/server:selected');
+  const customStartupTemplate = 'wine ./Game.exe --port "{{SERVER_PORT}}" --name "{{PUBLIC_SETTING}}"';
+  const resolvedCustomStartup = resolveServer({
+    id: 'custom-startup-test', name: 'Custom startup test', description: '', nestId: 'test',
+    images: ['example/server:latest'], environment: {}, variables: [],
+    startup: 'default --port {{SERVER_PORT}}', stopCommand: '', startupDone: '', configFiles: {}
+  }, {
+    serverId: 'server-1',
+    serverPort: 25613,
+    startupTemplate: customStartupTemplate,
+    variables: { PUBLIC_SETTING: 'visible' }
+  });
+  assert.equal(resolvedCustomStartup.startup_command, 'wine ./Game.exe --port "25613" --name "visible"');
+  const resolvedCustomEnvironment = Object.fromEntries(resolvedCustomStartup.env_vars.map(entry => entry.split(/=(.*)/s).slice(0, 2)));
+  assert.equal(resolvedCustomEnvironment.AGAPORNIS_STARTUP_TEMPLATE, customStartupTemplate, 'the raw template must be retained without JSON escape characters');
 
   const settingsServer = {
     id: 'server-1', nodeId: 'node-1', name: 'Original name', eggId: 'startup-variable-test', status: 'created',
@@ -132,6 +146,7 @@ async function main() {
   let runtimeConfiguration;
   const settingsRegistry = {
     canManageAccess: () => true,
+    reconcilePortAllocations: async (_id, variables) => variables,
     updateSettings: async (_id, patch) => {
       savedSettingsPatch = patch;
       return { ...settingsServer, ...patch };
@@ -142,6 +157,7 @@ async function main() {
     requireNotSupport: () => undefined,
     requireNodeServerPermission: async () => settingsServer,
     canManageResources: () => true,
+    applyVariableUpdate: (next, current, editableKeys, user) => support.applyVariableUpdate(next, current, editableKeys, user),
     resourcePatch: body => support.resourcePatch(body),
     mergeResourceVariables: (variables, patch) => support.mergeResourceVariables(variables, patch),
     hasLiveResourcePatch: patch => support.hasLiveResourcePatch(patch),
@@ -155,6 +171,7 @@ async function main() {
       updateServerConfiguration: async (_nodeId, request) => { runtimeConfiguration = request; return { success: true }; }
     },
     {
+      userEditableVariableKeys: () => new Set(['CUSTOM_CREATED']),
       resolveServer: (_eggId, body) => resolveServer({
         id: 'startup-variable-test', name: 'Startup variable test', description: '', nestId: 'test',
         images: ['example/server:selected'], environment: {}, variables: [],
@@ -172,6 +189,16 @@ async function main() {
   assert.equal(runtimeConfiguration.startup_command, 'java -Xmx4096M -jar custom-value.jar');
   assert.equal(savedSettingsPatch.variables.STARTUP, runtimeConfiguration.startup_command, 'resource updates must persist the newly resolved STARTUP value');
   assert.equal(savedSettingsPatch.variables.SERVER_MEMORY, '4096');
+  const adminStartupTemplate = 'wine ./Game.exe --port "{{SERVER_PORT}}" --custom "{{CUSTOM_CREATED}}"';
+  await settingsController.updateSettings(
+    'node-1',
+    'server-1',
+    { variables: { CUSTOM_CREATED: 'custom-value' }, startupTemplate: adminStartupTemplate },
+    { user: { id: 'admin-1', role: 'admin', email: 'admin@example.test' } }
+  );
+  assert.equal(runtimeConfiguration.startup_command, 'wine ./Game.exe --port "25565" --custom "custom-value"');
+  assert.equal(savedSettingsPatch.variables.AGAPORNIS_STARTUP_TEMPLATE, adminStartupTemplate);
+  assert.equal(savedSettingsPatch.variables.STARTUP, runtimeConfiguration.startup_command);
   await settingsController.updateSettings('node-1', 'server-1', { name: 'Renamed display' }, { user: { id: 'admin-1', role: 'admin', email: 'admin@example.test' } });
   assert.equal(savedSettingsPatch.name, 'Renamed display');
   assert.equal(settingsServer.id, 'server-1', 'renaming must not change the server UUID');
@@ -180,6 +207,11 @@ async function main() {
     settingsController.updateSettings('node-1', 'server-1', { name: 'User rename' }, { user: { id: 'user-1', role: 'user', email: 'user@example.test' } }),
     /panel administrator/,
     'normal server owners must not be allowed to rename server identity'
+  );
+  await assert.rejects(
+    settingsController.updateSettings('node-1', 'server-1', { startupTemplate: 'user override' }, { user: { id: 'user-1', role: 'user', email: 'user@example.test' } }),
+    /admin role/,
+    'normal users must not be allowed to edit the raw startup template'
   );
   settingsSupport.canManageResources = () => true;
 

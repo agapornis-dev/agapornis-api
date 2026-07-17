@@ -46,7 +46,14 @@ export function resolveServer(egg: EggDefinition, body: any): ResolvedEggServer 
   delete env.SERVER_CPU_CORES;
   env.SERVER_ID = serverId;
 
-  const startup = interpolate(egg.startup, env);
+  const configuredStartupTemplate = body?.startupTemplate
+    ?? body?.startup_template
+    ?? valueForKey(provided, 'AGAPORNIS_STARTUP_TEMPLATE');
+  const startupTemplate = String(configuredStartupTemplate ?? egg.startup);
+  if (configuredStartupTemplate !== undefined) {
+    env.AGAPORNIS_STARTUP_TEMPLATE = startupTemplate;
+  }
+  const startup = interpolate(startupTemplate, env);
   env.STARTUP = startup;
   const install = egg.install;
   if (egg.raw?.scripts?.installation && !install?.script) {

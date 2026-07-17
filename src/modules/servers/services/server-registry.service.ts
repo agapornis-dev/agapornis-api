@@ -755,6 +755,8 @@ export class ServerRegistryService implements OnModuleInit {
       backupLimit: canViewBackups ? server.backupLimit : undefined,
       eggChangeAllowed: canViewSettings ? server.eggChangeAllowed : undefined,
       allowedEggIds: canViewSettings ? server.allowedEggIds : undefined,
+      startupCommand: canViewSettings ? this.startupCommand(server) : undefined,
+      startupTemplate: canViewSettings && canManageResources ? this.startupTemplate(server) : undefined,
       variables: canViewSettings
         ? this.clientVariables(
           server.variables,
@@ -774,6 +776,36 @@ export class ServerRegistryService implements OnModuleInit {
       access: exposeAccess ? clientAccess : undefined,
       createdAt: server.createdAt
     };
+  }
+
+  private startupTemplate(server: ServerRecord) {
+    if (server.variables?.AGAPORNIS_STARTUP_TEMPLATE !== undefined) {
+      return server.variables.AGAPORNIS_STARTUP_TEMPLATE;
+    }
+    if (!server.eggId) return undefined;
+    try {
+      return this.eggs.get(server.eggId).startup;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private startupCommand(server: ServerRecord) {
+    if (server.variables?.STARTUP !== undefined) return server.variables.STARTUP;
+    if (!server.eggId) return undefined;
+    try {
+      return this.eggs.resolveServer(server.eggId, {
+        serverId: server.id,
+        variables: server.variables || {},
+        memoryBytes: server.memoryBytes,
+        cpuLimitPercentage: server.cpuLimitPercentage,
+        diskBytes: server.diskLimitBytes,
+        serverPort: server.variables?.SERVER_PORT,
+        dockerImage: server.variables?.DOCKER_IMAGE,
+      }).startup_command;
+    } catch {
+      return undefined;
+    }
   }
 
   private clientVariables(

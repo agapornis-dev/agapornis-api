@@ -17,6 +17,8 @@ async function main() {
   const registry = Object.create(ServerRegistryService.prototype);
   registry.eggs = {
     userEditableVariableKeys: () => new Set(['PUBLIC_SETTING']),
+    get: () => ({ startup: 'default {{SERVER_PORT}}' }),
+    resolveServer: () => ({ startup_command: 'default 25565' }),
   };
   const server = {
     id: 'server-1',
@@ -32,6 +34,8 @@ async function main() {
       SERVER_DISK: '10240',
       SERVER_CPU: '100',
       SERVER_ID: 'server-1',
+      STARTUP: 'wine ./Game.exe --port "25565"',
+      AGAPORNIS_STARTUP_TEMPLATE: 'wine ./Game.exe --port "{{SERVER_PORT}}"',
       AGAPORNIS_FROZEN: 'true',
       AGAPORNIS_FREEZE_REASON: 'private billing note',
       AGAPORNIS_PORT_MAPPINGS: '[]',
@@ -62,16 +66,22 @@ async function main() {
   assert.equal(settingsView.variables.SERVER_DISK, undefined);
   assert.equal(settingsView.variables.SERVER_CPU, undefined);
   assert.equal(settingsView.variables.SERVER_ID, undefined);
+  assert.equal(settingsView.startupCommand, 'wine ./Game.exe --port "25565"');
+  assert.equal(settingsView.startupTemplate, undefined);
 
   const ownerView = registry.forUser(server, { id: 'owner-1', role: 'user' });
   assert.equal(ownerView.access, undefined);
   assert.equal(ownerView.ownerUserId, undefined);
   assert.equal(ownerView.variables.AGAPORNIS_PORT_MAPPINGS, undefined);
   assert.equal(ownerView.variables.INTERNAL_SETTING, 'owner-visible-only');
+  assert.equal(ownerView.startupCommand, 'wine ./Game.exe --port "25565"');
+  assert.equal(ownerView.startupTemplate, undefined);
 
   const adminView = registry.forUser(server, { id: 'admin-1', role: 'admin' });
   assert.equal(adminView.variables.AGAPORNIS_PORT_MAPPINGS, '[]');
   assert.equal(adminView.variables.SERVER_MEMORY, undefined, 'resource controls must not leak back into the Variables tab contract');
+  assert.equal(adminView.startupCommand, 'wine ./Game.exe --port "25565"');
+  assert.equal(adminView.startupTemplate, 'wine ./Game.exe --port "{{SERVER_PORT}}"');
 
   const supportView = registry.forUser(server, { id: 'support-1', role: 'support' });
   assert.equal(supportView.variables, undefined);

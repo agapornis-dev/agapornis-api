@@ -186,6 +186,19 @@ export class ServerSettingsController {
       }
       patch.name = name;
     }
+    const requestedStartupTemplate = body?.startupTemplate ?? body?.startup_template;
+    const hasStartupTemplatePatch = requestedStartupTemplate !== undefined;
+    let startupTemplatePatch: string | undefined;
+    if (hasStartupTemplatePatch) {
+      if (!canManageResources) {
+        throw new HttpException('startup command editing requires admin role', HttpStatus.FORBIDDEN);
+      }
+      const startupTemplate = String(requestedStartupTemplate).trim();
+      if (!startupTemplate || startupTemplate.length > 8192 || /[\r\n\0]/.test(startupTemplate)) {
+        throw new HttpException('startup command must be a single line between 1 and 8192 characters', HttpStatus.BAD_REQUEST);
+      }
+      startupTemplatePatch = startupTemplate;
+    }
     let portMappingsToApply: Array<{ variable: string; internal_port: string; host_port: number }> | undefined;
     const hasEggPolicyPatch = body?.eggChangeAllowed !== undefined || body?.egg_change_allowed !== undefined || body?.allowedEggIds !== undefined || body?.allowed_egg_ids !== undefined;
     if (hasEggPolicyPatch) {
@@ -218,6 +231,12 @@ export class ServerSettingsController {
           portMappingsToApply = nextMappings;
         }
       }
+    }
+    if (startupTemplatePatch !== undefined) {
+      patch.variables = {
+        ...(patch.variables ?? server.variables ?? {}),
+        AGAPORNIS_STARTUP_TEMPLATE: startupTemplatePatch,
+      };
     }
 
     const resourcePatch = this.support.resourcePatch(body);
@@ -269,7 +288,7 @@ export class ServerSettingsController {
       }
     }
 
-    if (body?.variables || Object.keys(resourcePatch).length > 0) {
+    if (body?.variables || hasStartupTemplatePatch || Object.keys(resourcePatch).length > 0) {
       if (!server.eggId) {
         throw new HttpException('server egg configuration is missing', HttpStatus.CONFLICT);
       }

@@ -441,6 +441,7 @@ export class ServersController {
       this.eggs.userEditableVariableKeys(eggId),
       req.user
     );
+    if (changingEgg) delete effectiveVariables.AGAPORNIS_STARTUP_TEMPLATE;
     const resolveBody = {
       ...body,
       eggId,
@@ -457,6 +458,7 @@ export class ServersController {
         ? body?.hostPort || body?.host_port || body?.port || server.assignedHostPort
         : server.assignedHostPort,
       variables: effectiveVariables,
+      startupTemplate: changingEgg ? undefined : effectiveVariables.AGAPORNIS_STARTUP_TEMPLATE,
       portMappings: this.support.agentPortMappings({ ...server, variables: effectiveVariables })
     };
 
