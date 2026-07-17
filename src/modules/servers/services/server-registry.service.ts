@@ -2,6 +2,7 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseService } from '../../database/database.service';
+import { EggsService } from '../../eggs/eggs.service';
 
 const CLIENT_HIDDEN_RESOURCE_VARIABLES = new Set([
   'MEMORY',
@@ -35,7 +36,10 @@ export class ServerRegistryService implements OnModuleInit {
   private readonly servers = new Map<string, ServerRecord>();
   private readonly dataFile = path.join(__dirname, '..', '..', '..', 'data', 'servers.json');
 
-  constructor(private readonly database: DatabaseService) {
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly eggs: EggsService,
+  ) {
     this.load();
   }
 
@@ -751,7 +755,13 @@ export class ServerRegistryService implements OnModuleInit {
       backupLimit: canViewBackups ? server.backupLimit : undefined,
       eggChangeAllowed: canViewSettings ? server.eggChangeAllowed : undefined,
       allowedEggIds: canViewSettings ? server.allowedEggIds : undefined,
-      variables: canViewSettings ? this.clientVariables(server.variables, canManageResources) : undefined,
+      variables: canViewSettings
+        ? this.clientVariables(
+          server.variables,
+          canManageResources,
+          access.relationship === 'collaborator' ? this.userEditableVariableKeys(server.eggId) : undefined,
+        )
+        : undefined,
       ownerUserId: canManageResources ? server.ownerUserId : undefined,
       databaseMemoryBytes: canManageResources ? server.databaseMemoryBytes : undefined,
       databaseDiskLimitBytes: canManageResources ? server.databaseDiskLimitBytes : undefined,
@@ -766,14 +776,30 @@ export class ServerRegistryService implements OnModuleInit {
     };
   }
 
-  private clientVariables(variables?: Record<string, string>, includePortMappings = false) {
+  private clientVariables(
+    variables?: Record<string, string>,
+    includePortMappings = false,
+    allowedKeys?: Set<string>,
+  ) {
     if (!variables) return undefined;
     return Object.fromEntries(
       Object.entries(variables).filter(([key]) =>
+        (!allowedKeys || allowedKeys.has(key.toUpperCase()))
+        &&
         !CLIENT_HIDDEN_RESOURCE_VARIABLES.has(key.toUpperCase())
         && (!key.startsWith('AGAPORNIS_') || (includePortMappings && key === 'AGAPORNIS_PORT_MAPPINGS'))
       )
     );
+  }
+
+  private userEditableVariableKeys(eggId?: string) {
+    try {
+      return this.eggs?.userEditableVariableKeys(eggId) || new Set<string>();
+    } catch {
+      // Deleted or unknown egg definitions must not turn into an information
+      // disclosure. Persisted values remain available to the runtime.
+      return new Set<string>();
+    }
   }
 
   private rowToRecord(row: any): ServerRecord {

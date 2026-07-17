@@ -46,6 +46,10 @@ export class ServerDatabasesService implements OnModuleInit {
     return Array.from(this.databases.values()).filter(item => item.serverId === serverId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
+  async getServerDatabase(serverId: string, databaseId: string) {
+    return this.getDatabase(serverId, databaseId);
+  }
+
   async listNodeDatabases(nodeId: string) {
     if (this.database.enabled) {
       const rows = await this.database.query(`SELECT * FROM server_databases WHERE node_id = ${this.database.placeholders(1)} AND status <> 'deleting' ORDER BY created_at DESC`, [nodeId]);

@@ -177,8 +177,8 @@ export class ServerSettingsController {
 
     const patch: any = {};
     if (body?.name !== undefined) {
-      if (!this.registry.canManageAccess(server, req.user)) {
-        throw new HttpException('only the server owner or an administrator can rename this server', HttpStatus.FORBIDDEN);
+      if (!canManageResources) {
+        throw new HttpException('only a panel administrator can rename this server', HttpStatus.FORBIDDEN);
       }
       const name = String(body.name).trim();
       if (!name || name.length > 160) {

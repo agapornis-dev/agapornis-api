@@ -10,6 +10,9 @@ const AGENT_CHANNEL_OPTIONS: grpc.ChannelOptions = {
   'grpc.keepalive_timeout_ms': 10_000,
   'grpc.keepalive_permit_without_calls': 1,
   'grpc.http2.max_pings_without_data': 0,
+  'grpc.initial_reconnect_backoff_ms': 250,
+  'grpc.min_reconnect_backoff_ms': 250,
+  'grpc.max_reconnect_backoff_ms': 5_000,
 };
 
 export interface ObservedNodeCertificate {
@@ -61,6 +64,9 @@ export class AgentConnectionService implements OnModuleDestroy {
     if (cached) return cached;
     const client = new ClientType(target.address, target.credentials, AGENT_CHANNEL_OPTIONS);
     this.clientCache.set(key, client);
+    // Begin DNS/TCP/TLS negotiation when the cached client is created instead
+    // of making the first API request pay the full connection setup cost.
+    client.getChannel?.().getConnectivityState?.(true);
     return client;
   }
 
@@ -78,7 +84,7 @@ export class AgentConnectionService implements OnModuleDestroy {
   }
 
   private resolveTarget(nodeId: string) {
-    const entry = this.agents.list().find(candidate => candidate.nodeId === nodeId);
+    const entry = this.agents.get(nodeId);
     if (!entry) throw new Error(`node '${nodeId}' not registered`);
     const address = this.buildAddress(entry);
     if (!this.shouldUseTls(entry, address)) return { address, credentials: grpc.credentials.createInsecure(), securityKey: 'insecure' };

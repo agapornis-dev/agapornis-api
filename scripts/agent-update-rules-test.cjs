@@ -50,6 +50,10 @@ async function main() {
       () => service.apply('node-1', { artifactUrl: 'https://updates.example/agent', sha256: 'bad' }),
       BadRequestException,
     );
+    await assert.rejects(
+      () => service.apply('node-1', { artifactUrl: 'https://attacker.example/agent', sha256: 'a'.repeat(64) }),
+      /trusted release artifact/,
+    );
 
     const result = await service.apply('node-1', {});
     assert.equal(result.accepted, true);

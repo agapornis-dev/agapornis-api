@@ -175,6 +175,13 @@ async function main() {
   await settingsController.updateSettings('node-1', 'server-1', { name: 'Renamed display' }, { user: { id: 'admin-1', role: 'admin', email: 'admin@example.test' } });
   assert.equal(savedSettingsPatch.name, 'Renamed display');
   assert.equal(settingsServer.id, 'server-1', 'renaming must not change the server UUID');
+  settingsSupport.canManageResources = () => false;
+  await assert.rejects(
+    settingsController.updateSettings('node-1', 'server-1', { name: 'User rename' }, { user: { id: 'user-1', role: 'user', email: 'user@example.test' } }),
+    /panel administrator/,
+    'normal server owners must not be allowed to rename server identity'
+  );
+  settingsSupport.canManageResources = () => true;
 
   const createRequest = createServerRequest({ serverId: 'create-resource-test', cpuLimitPercentage: 250, cpuCores: 8, cpuPinnedThreads: '0,2-3', swapMemoryMb: 1024, swapMemoryStorage: 'general' });
   assert.equal(createRequest.cpu_limit_percentage, 250, 'create must preserve percentage semantics');

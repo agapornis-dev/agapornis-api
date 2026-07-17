@@ -39,6 +39,7 @@ interface ConsoleFeed {
   retryTimer?: NodeJS.Timeout;
   flushTimer?: NodeJS.Timeout;
   pendingLines: string[];
+  pendingReplayed?: boolean;
   pendingCharacters: number;
   historyCharacters: number;
   stopped: boolean;
@@ -281,7 +282,11 @@ export class ServerRealtimeService implements OnModuleDestroy {
       const line = message.log_line || message.logLine || '';
       if (!line) return;
       this.counters.consoleMessagesReceived += 1;
-      this.queueConsoleLine(feed, line);
+      // Proto3 optional presence distinguishes upgraded agents from legacy
+      // agents. Legacy output is treated as replay to avoid false live-only
+      // alerts while nodes are rolling forward.
+      const replayed = message._replayed === 'replayed' ? Boolean(message.replayed) : true;
+      this.queueConsoleLine(feed, line, replayed);
     });
 
     call.on('error', (error: any) => {
@@ -370,7 +375,9 @@ export class ServerRealtimeService implements OnModuleDestroy {
     feed.startTimer.unref?.();
   }
 
-  private queueConsoleLine(feed: ConsoleFeed, line: string) {
+  private queueConsoleLine(feed: ConsoleFeed, line: string, replayed: boolean) {
+    if (feed.pendingLines.length > 0 && feed.pendingReplayed !== replayed) this.flushConsole(feed);
+    feed.pendingReplayed = replayed;
     feed.pendingLines.push(line);
     feed.pendingCharacters += line.length + 1;
     if (feed.pendingLines.length >= this.consoleBatchEntryLimit ||
@@ -391,8 +398,10 @@ export class ServerRealtimeService implements OnModuleDestroy {
     feed.flushTimer = undefined;
     if (feed.pendingLines.length === 0) return;
     const line = feed.pendingLines.join('\n');
+    const replayed = Boolean(feed.pendingReplayed);
     feed.pendingLines.length = 0;
     feed.pendingCharacters = 0;
+    feed.pendingReplayed = undefined;
 
     feed.history.push(line);
     feed.historyCharacters += line.length;
@@ -403,7 +412,7 @@ export class ServerRealtimeService implements OnModuleDestroy {
     }
     this.broadcast(feed.listeners, {
       event: 'console',
-      payload: { nodeId: feed.nodeId, serverId: feed.serverId, line }
+      payload: { nodeId: feed.nodeId, serverId: feed.serverId, line, replayed }
     });
     this.counters.consoleBatchesBroadcast += 1;
   }
@@ -415,7 +424,7 @@ export class ServerRealtimeService implements OnModuleDestroy {
       if (batch.length === 0) return;
       listener({
         event: 'console',
-        payload: { nodeId: feed.nodeId, serverId: feed.serverId, line: batch.join('\n') }
+        payload: { nodeId: feed.nodeId, serverId: feed.serverId, line: batch.join('\n'), replayed: true }
       });
       batch = [];
       characters = 0;

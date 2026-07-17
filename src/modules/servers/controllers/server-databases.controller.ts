@@ -22,7 +22,7 @@ export class ServerDatabasesController {
     this.support.requireNotSupport(req.user, 'view database credentials');
     await this.requireServerAccess(serverId, req.user, true);
     return (await this.databases.listServerDatabases(serverId))
-      .map((database: any) => this.databaseResponse(database, this.canViewInfrastructure(req.user)));
+      .map((database: any) => this.databaseResponse(database, this.canViewInfrastructure(req.user), false));
   }
 
   @Post('servers/:serverId/databases')
@@ -33,11 +33,36 @@ export class ServerDatabasesController {
     try {
       return this.databaseResponse(
         await this.databases.createServerDatabase(server, body || {}),
-        this.canViewInfrastructure(req.user)
+        this.canViewInfrastructure(req.user),
+        true,
       );
     } catch (error: any) {
       throw new HttpException(error.message || 'failed to create database', HttpStatus.BAD_REQUEST);
     }
+  }
+
+  @Post('servers/:serverId/databases/:databaseId/credentials')
+  @Roles('user')
+  async revealServerDatabaseCredentials(
+    @Param('serverId') serverId: string,
+    @Param('databaseId') databaseId: string,
+    @Req() req: any
+  ) {
+    this.support.requireNotSupport(req.user, 'view database credentials');
+    const server = await this.requireServerAccess(serverId, req.user, false);
+    if (server.ownerUserId !== req.user.id && !['owner', 'admin'].includes(req.user.role)) {
+      throw new HttpException('only the server owner or a panel administrator can reveal database credentials', HttpStatus.FORBIDDEN);
+    }
+    const database = await this.databases.getServerDatabase(serverId, databaseId);
+    if (!database) throw new HttpException('database not found', HttpStatus.NOT_FOUND);
+    return {
+      id: database.id,
+      databaseName: database.databaseName,
+      username: database.username,
+      password: database.password,
+      host: database.host,
+      port: database.port,
+    };
   }
 
   @Delete('servers/:serverId/databases/:databaseId')
@@ -110,14 +135,15 @@ export class ServerDatabasesController {
     return ['owner', 'admin'].includes(user.role);
   }
 
-  private databaseResponse(database: any, includeInfrastructure = false) {
+  private databaseResponse(database: any, includeInfrastructure = false, includeCredentials = false) {
     return {
       id: database.id,
       type: database.type,
       name: database.name,
       databaseName: database.databaseName,
       username: database.username,
-      password: database.password,
+      password: includeCredentials ? database.password : undefined,
+      passwordConfigured: Boolean(database.password),
       host: database.host,
       port: database.port,
       containerId: includeInfrastructure ? database.containerId : undefined,

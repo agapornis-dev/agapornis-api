@@ -151,16 +151,18 @@ async function main() {
   const unsubscribeConsole = churnRealtime.subscribeConsole('node-a', 'stable-console', event => firstConsoleEvents.push(event));
   await waitFor(() => consoleStarts === 1, 'a stable console selection did not start after the churn window');
   for (let index = 0; index < 200; index += 1) {
-    activeConsoleCall.emit('data', { log_line: `line-${index}` });
+    activeConsoleCall.emit('data', { log_line: `line-${index}`, replayed: false, _replayed: 'replayed' });
   }
   await waitFor(() => firstConsoleEvents.flatMap(event => event.payload.line.split('\n')).length === 200, 'live console batching dropped lines');
   assert.ok(firstConsoleEvents.length < 20, 'live console lines were still broadcast one event at a time');
+  assert.ok(firstConsoleEvents.every(event => event.payload.replayed === false), 'live console lines were marked as history');
 
   const replayedConsoleEvents = [];
   const unsubscribeReplay = churnRealtime.subscribeConsole('node-a', 'stable-console', event => replayedConsoleEvents.push(event));
   assert.equal(consoleStarts, 1, 'a second viewer opened a duplicate console stream');
   assert.equal(replayedConsoleEvents.flatMap(event => event.payload.line.split('\n')).length, 200, 'console replay dropped history');
   assert.ok(replayedConsoleEvents.length <= 2, 'cached console history was replayed as too many SSE events');
+  assert.ok(replayedConsoleEvents.every(event => event.payload.replayed === true), 'cached console history was marked as live output');
   const diagnostics = churnRealtime.diagnostics();
   assert.equal(diagnostics.realtime.counters.transientStatsSelections, 50);
   assert.equal(diagnostics.realtime.counters.transientConsoleSelections, 50);

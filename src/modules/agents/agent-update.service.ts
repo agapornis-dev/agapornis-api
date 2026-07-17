@@ -60,8 +60,17 @@ export class AgentUpdateService {
   }
 
   async apply(nodeId: string, body: ApplyAgentUpdateDto) {
-    let artifactUrl = body?.artifactUrl || body?.artifact_url || this.config.get('AGAPORNIS_AGENT_UPDATE_URL');
-    let sha256 = body?.sha256 || this.config.get('AGAPORNIS_AGENT_UPDATE_SHA256');
+    const requestedUrl = body?.artifactUrl || body?.artifact_url;
+    let artifactUrl = requestedUrl || this.config.get('AGAPORNIS_AGENT_UPDATE_URL');
+    let sha256: string | undefined = body?.sha256 || this.config.get('AGAPORNIS_AGENT_UPDATE_SHA256') || undefined;
+    if (requestedUrl) {
+      const trusted = await this.trustedRequestedArtifact(nodeId, requestedUrl);
+      if (body?.sha256 && trusted.sha256 && String(body.sha256).toLowerCase() !== String(trusted.sha256).toLowerCase()) {
+        throw new BadRequestException('sha256 must match the trusted update artifact');
+      }
+      artifactUrl = trusted.url;
+      sha256 = trusted.sha256 || body?.sha256;
+    }
     if (!artifactUrl) {
       const status: any = await this.client.getUpdateStatus(nodeId);
       const artifact = await this.systemUpdates.agentArtifact(status.runtime_identifier || status.runtimeIdentifier);
@@ -70,6 +79,31 @@ export class AgentUpdateService {
     }
     this.validateArtifact(artifactUrl, sha256);
     return this.client.applyUpdate(nodeId, { artifactUrl, sha256 });
+  }
+
+  private async trustedRequestedArtifact(nodeId: string, requestedUrl: string) {
+    const normalizedRequested = this.normalizedUrl(requestedUrl);
+    const configuredUrl = this.config.get('AGAPORNIS_AGENT_UPDATE_URL');
+    if (configuredUrl && normalizedRequested === this.normalizedUrl(configuredUrl)) {
+      return { url: configuredUrl, sha256: this.config.get('AGAPORNIS_AGENT_UPDATE_SHA256') };
+    }
+
+    try {
+      const status: any = await this.client.getUpdateStatus(nodeId);
+      const artifact = await this.systemUpdates.agentArtifact(status.runtime_identifier || status.runtimeIdentifier);
+      if (normalizedRequested === this.normalizedUrl(artifact.url)) return artifact;
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+    }
+    throw new BadRequestException('artifactUrl must match a configured or trusted release artifact');
+  }
+
+  private normalizedUrl(value: string) {
+    try {
+      return new URL(String(value)).toString();
+    } catch {
+      throw new BadRequestException('artifactUrl must be a valid URL');
+    }
   }
 
   async restart(nodeId: string) {
@@ -97,7 +131,7 @@ export class AgentUpdateService {
     return response;
   }
 
-  private validateArtifact(artifactUrl: string, sha256: string) {
+  private validateArtifact(artifactUrl: string, sha256?: string) {
     if (!artifactUrl) throw new BadRequestException('artifactUrl is required');
     let parsed: URL;
     try {

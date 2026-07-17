@@ -15,14 +15,19 @@ const { ActivityLogService } = require('../src/modules/activity-log/activity-log
 
 async function main() {
   const registry = Object.create(ServerRegistryService.prototype);
+  registry.eggs = {
+    userEditableVariableKeys: () => new Set(['PUBLIC_SETTING']),
+  };
   const server = {
     id: 'server-1',
     nodeId: 'node-1',
     name: 'Private server',
+    eggId: 'minecraft',
     ownerUserId: 'owner-1',
     status: 'running',
     variables: {
       PUBLIC_SETTING: 'visible-with-settings-access',
+      INTERNAL_SETTING: 'owner-visible-only',
       SERVER_MEMORY: '2048',
       SERVER_DISK: '10240',
       SERVER_CPU: '100',
@@ -49,6 +54,7 @@ async function main() {
 
   const settingsView = registry.forUser(server, { id: 'settings-1', role: 'user' });
   assert.equal(settingsView.variables.PUBLIC_SETTING, 'visible-with-settings-access');
+  assert.equal(settingsView.variables.INTERNAL_SETTING, undefined);
   assert.equal(settingsView.variables.AGAPORNIS_FROZEN, undefined);
   assert.equal(settingsView.variables.AGAPORNIS_FREEZE_REASON, undefined);
   assert.equal(settingsView.variables.AGAPORNIS_PORT_MAPPINGS, undefined);
@@ -61,6 +67,7 @@ async function main() {
   assert.equal(ownerView.access, undefined);
   assert.equal(ownerView.ownerUserId, undefined);
   assert.equal(ownerView.variables.AGAPORNIS_PORT_MAPPINGS, undefined);
+  assert.equal(ownerView.variables.INTERNAL_SETTING, 'owner-visible-only');
 
   const adminView = registry.forUser(server, { id: 'admin-1', role: 'admin' });
   assert.equal(adminView.variables.AGAPORNIS_PORT_MAPPINGS, '[]');
@@ -224,6 +231,14 @@ async function main() {
         status: 'running',
         createdAt: '2026-01-01T00:00:00.000Z',
       }],
+      getServerDatabase: async () => ({
+        id: 'database-1',
+        databaseName: 'main',
+        username: 'server_user',
+        password: 'owner-visible-password',
+        host: 'db.example.test',
+        port: 5432,
+      }),
     },
     {
       get: async () => server,
@@ -240,6 +255,27 @@ async function main() {
   assert.equal(databaseView.dockerImage, undefined);
   assert.equal(databaseView.memoryBytes, undefined);
   assert.equal(databaseView.diskLimitBytes, undefined);
+  assert.equal(databaseView.password, undefined);
+  assert.equal(databaseView.passwordConfigured, true);
+  await assert.rejects(
+    databasesController.revealServerDatabaseCredentials('server-1', 'database-1', { user: userRecord }),
+    /only the server owner or a panel administrator/,
+  );
+  const databaseCredentials = await databasesController.revealServerDatabaseCredentials(
+    'server-1',
+    'database-1',
+    { user: { ...userRecord, id: 'owner-1' } },
+  );
+  assert.equal(databaseCredentials.password, 'owner-visible-password');
+
+  const webhookAddressChecks = Object.create(WebhooksService.prototype);
+  for (const address of ['127.0.0.1', '::ffff:7f00:1', '192.0.2.10', '198.51.100.5', '203.0.113.8', 'ff02::1']) {
+    assert.equal(webhookAddressChecks.isPrivateAddress(address), true, `${address} was not blocked`);
+  }
+  assert.deepEqual(
+    webhookAddressChecks.safeHeaders({ Host: 'internal', 'transfer-encoding': 'chunked', authorization: 'allowed' }),
+    { authorization: 'allowed' },
+  );
 
   let summaryQuery = '';
   const databaseWebhooks = Object.create(WebhooksService.prototype);

@@ -1,6 +1,8 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as http from 'http';
+import * as https from 'https';
 import * as path from 'path';
 import { lookup } from 'dns/promises';
 import { isIP } from 'net';
@@ -253,9 +255,9 @@ export class WebhooksService implements OnModuleInit {
     const body = JSON.stringify(this.messageBody(target, eventType, payload));
 
     const headers: Record<string, string> = {
+      ...this.safeHeaders(target.headers),
       'content-type': 'application/json',
       'x-agapornis-event': eventType,
-      ...target.headers
     };
 
     if (target.secret) {
@@ -266,16 +268,9 @@ export class WebhooksService implements OnModuleInit {
     let success = false;
 
     try {
-      await this.assertPublicWebhookTarget(target.url);
-      const response = await fetch(target.url, {
-        method: 'POST',
-        headers,
-        body,
-        redirect: 'manual'
-      });
-      statusCode = response.status;
-      success = response.ok;
-      await response.body?.cancel();
+      const response = await this.postToValidatedTarget(target.url, headers, body);
+      statusCode = response.statusCode;
+      success = response.success;
     } catch {}
 
     const event = {
@@ -503,37 +498,93 @@ export class WebhooksService implements OnModuleInit {
   }
 
   private async assertPublicWebhookTarget(value: string) {
-    if (this.config.bool('ALLOW_PRIVATE_WEBHOOK_TARGETS') && !this.config.isProduction()) return;
+    await this.resolvePublicWebhookTarget(value);
+  }
+
+  private async resolvePublicWebhookTarget(value: string): Promise<{ address: string; family: 4 | 6 }> {
     const url = new URL(value);
     const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-    if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+    const allowPrivate = this.config.bool('ALLOW_PRIVATE_WEBHOOK_TARGETS') && !this.config.isProduction();
+    if (!allowPrivate && (hostname === 'localhost' || hostname.endsWith('.localhost'))) {
       throw new Error('webhook URL must not target localhost or private infrastructure');
     }
 
-    const addresses = isIP(hostname)
-      ? [hostname]
-      : (await lookup(hostname, { all: true, verbatim: true })).map(result => result.address);
-    if (addresses.length === 0 || addresses.some(address => this.isPrivateAddress(address))) {
+    const literalFamily = isIP(hostname);
+    const addresses: Array<{ address: string; family: 4 | 6 }> = literalFamily
+      ? [{ address: hostname, family: literalFamily as 4 | 6 }]
+      : (await lookup(hostname, { all: true, verbatim: true }))
+        .map(result => ({ address: result.address, family: result.family as 4 | 6 }));
+    if (addresses.length === 0 || (!allowPrivate && addresses.some(result => this.isPrivateAddress(result.address)))) {
       throw new Error('webhook URL must resolve only to public IP addresses');
     }
+    return addresses[0];
+  }
+
+  private async postToValidatedTarget(url: string, headers: Record<string, string>, body: string) {
+    const resolved = await this.resolvePublicWebhookTarget(url);
+    const parsed = new URL(url);
+    const transport = parsed.protocol === 'https:' ? https : http;
+    return new Promise<{ statusCode: number; success: boolean }>((resolve, reject) => {
+      const request = transport.request(parsed, {
+        method: 'POST',
+        headers,
+        // Use the already-validated address while retaining the original
+        // hostname for Host and TLS SNI. This prevents DNS rebinding between
+        // validation and connection establishment.
+        lookup: ((_hostname: string, _options: unknown, callback: (...args: any[]) => void) => {
+          callback(null, resolved.address, resolved.family);
+        }) as any,
+      }, response => {
+        const statusCode = Number(response.statusCode || 0);
+        response.resume();
+        resolve({ statusCode, success: statusCode >= 200 && statusCode < 300 });
+      });
+      request.setTimeout(15_000, () => request.destroy(new Error('webhook request timed out')));
+      request.once('error', reject);
+      request.end(body);
+    });
+  }
+
+  private safeHeaders(headers: Record<string, string> = {}) {
+    const blocked = new Set([
+      'connection', 'content-length', 'host', 'proxy-authorization', 'proxy-connection',
+      'te', 'trailer', 'transfer-encoding', 'upgrade',
+    ]);
+    return Object.fromEntries(Object.entries(headers)
+      .filter(([name, value]) => !blocked.has(name.toLowerCase()) && typeof value === 'string'));
   }
 
   private isPrivateAddress(value: string): boolean {
-    const address = value.toLowerCase();
-    if (address.startsWith('::ffff:')) return this.isPrivateAddress(address.slice(7));
+    let address = value.toLowerCase();
+    if (address.includes(':')) {
+      try { address = new URL(`http://[${address}]/`).hostname.replace(/^\[|\]$/g, ''); }
+      catch { return true; }
+    }
+    if (address.startsWith('::ffff:')) {
+      const mapped = address.slice(7);
+      if (mapped.includes('.')) return this.isPrivateAddress(mapped);
+      const words = mapped.split(':').map(part => Number.parseInt(part, 16));
+      if (words.length !== 2 || words.some(part => !Number.isInteger(part) || part < 0 || part > 0xffff)) return true;
+      return this.isPrivateAddress(`${words[0] >> 8}.${words[0] & 0xff}.${words[1] >> 8}.${words[1] & 0xff}`);
+    }
     if (address.includes(':')) {
       return address === '::' || address === '::1' || address.startsWith('fc') || address.startsWith('fd')
-        || /^fe[89ab]/.test(address) || address.startsWith('2001:db8:');
+        || /^fe[89ab]/.test(address) || /^fe[c-f]/.test(address) || address.startsWith('ff')
+        || address.startsWith('2001:db8:');
     }
 
     const parts = address.split('.').map(Number);
     if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return true;
-    const [a, b] = parts;
+    const [a, b, c] = parts;
     return a === 0 || a === 10 || a === 127 || a >= 224
       || (a === 100 && b >= 64 && b <= 127)
       || (a === 169 && b === 254)
       || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 0 && c === 0)
+      || (a === 192 && b === 0 && c === 2)
       || (a === 192 && b === 168)
-      || (a === 198 && (b === 18 || b === 19));
+      || (a === 192 && b === 88 && c === 99)
+      || (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100)))
+      || (a === 203 && b === 0 && c === 113);
   }
 }
