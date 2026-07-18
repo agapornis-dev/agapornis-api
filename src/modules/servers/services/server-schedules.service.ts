@@ -2,10 +2,16 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { ActivityLogService } from '../../activity-log/activity-log.service';
 import { AgentClientService } from '../../agent-client/agent-client.service';
 import { DatabaseService } from '../../database/database.service';
+import { UsersService } from '../../users/users.service';
+import { ServerBackupOperationsService } from './server-backup-operations.service';
 import { ServerDatabasesService } from './server-databases.service';
-import { ServerRegistryService } from './server-registry.service';
+import { ServerPermissionScope, ServerRegistryService } from './server-registry.service';
+
+export type ServerScheduleAction = 'restart' | 'start' | 'stop' | 'command' | 'backup_create' | 'backup_delete' | 'clear_directory';
+type BackupStorage = 'local' | 's3';
 
 export interface ServerSchedule {
   id: string;
@@ -14,24 +20,40 @@ export interface ServerSchedule {
   name: string;
   enabled: boolean;
   intervalSeconds: number;
-  action: 'restart' | 'start' | 'stop' | 'command';
+  action: ServerScheduleAction;
   command?: string;
+  targetPath?: string;
+  storage?: BackupStorage;
+  actorUserId?: string;
   lastRunAt?: string;
   nextRunAt?: string;
   createdAt: string;
 }
+
+const ACTIONS = new Set<ServerScheduleAction>(['restart', 'start', 'stop', 'command', 'backup_create', 'backup_delete', 'clear_directory']);
+const MIN_INTERVAL_SECONDS = 60;
+const MIN_DESTRUCTIVE_INTERVAL_SECONDS = 300;
+const MAX_INTERVAL_SECONDS = 2_147_000;
+const MAX_TIMER_MS = 2_147_000_000;
+const MAX_SCHEDULES_PER_SERVER = 50;
+const MAX_CLEAR_ITEMS = 1000;
+
 @Injectable()
 export class ServerSchedulesService implements OnModuleInit {
   private readonly logger = new Logger(ServerSchedulesService.name);
   private readonly schedules = new Map<string, ServerSchedule>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
+  private readonly executions = new Map<string, Promise<any>>();
   private readonly dataFile = path.join(__dirname, '..', '..', '..', 'data', 'server-schedules.json');
 
   constructor(
     private readonly client: AgentClientService,
     private readonly database: DatabaseService,
     private readonly databases: ServerDatabasesService,
-    private readonly registry: ServerRegistryService
+    private readonly registry: ServerRegistryService,
+    private readonly users: UsersService,
+    private readonly backups: ServerBackupOperationsService,
+    private readonly activityLog: ActivityLogService,
   ) {
     this.load();
   }
@@ -42,38 +64,77 @@ export class ServerSchedulesService implements OnModuleInit {
       this.schedules.clear();
       for (const schedule of records) this.schedules.set(schedule.id, schedule);
     }
-    for (const schedule of this.schedules.values()) this.schedule(schedule);
+
+    let migrated = false;
+    for (const schedule of this.schedules.values()) {
+      try {
+        schedule.action = this.action(schedule.action);
+        schedule.name = this.name(schedule.name);
+        schedule.intervalSeconds = this.interval(schedule.intervalSeconds, schedule.action);
+        Object.assign(schedule, this.actionConfiguration(schedule.action, schedule));
+      } catch (error: any) {
+        schedule.enabled = false;
+        this.logger.error(`Disabled invalid schedule ${schedule.id}: ${error?.message || error}`);
+        migrated = true;
+      }
+      if (!schedule.actorUserId) {
+        const server = await this.registry.get(schedule.serverId);
+        schedule.actorUserId = server?.ownerUserId;
+        if (!schedule.actorUserId) schedule.enabled = false;
+        migrated = true;
+      }
+      this.schedule(schedule);
+    }
+    if (migrated) this.save();
   }
 
   listForServer(serverId: string): ServerSchedule[] {
-    return Array.from(this.schedules.values()).filter(s => s.serverId === serverId);
+    return Array.from(this.schedules.values()).filter(schedule => schedule.serverId === serverId);
   }
 
-  create(serverId: string, nodeId: string, body: any): ServerSchedule {
-    const intervalSeconds = Number(body?.intervalSeconds || body?.interval_seconds || 0);
-    if (!body?.name) throw new Error('name is required');
-    if (!intervalSeconds || intervalSeconds < 60) throw new Error('intervalSeconds must be at least 60');
+  getForServer(scheduleId: string, serverId: string) {
+    const schedule = this.schedules.get(scheduleId);
+    if (!schedule || schedule.serverId !== serverId) throw new Error('schedule not found');
+    return schedule;
+  }
 
-    const action = String(body?.action || 'restart') as ServerSchedule['action'];
-    if (!['restart', 'start', 'stop', 'command'].includes(action)) {
-      throw new Error("action must be one of: restart, start, stop, command");
+  requiredPermission(action: unknown): ServerPermissionScope {
+    switch (String(action)) {
+      case 'restart':
+      case 'start':
+      case 'stop':
+        return 'power';
+      case 'command':
+        return 'console.send';
+      case 'backup_create':
+      case 'backup_delete':
+        return 'backups';
+      case 'clear_directory':
+        return 'files.write';
+      default:
+        throw new Error('schedule action is invalid');
     }
+  }
 
-    const command = action === 'command' ? String(body?.command || '').trim() : undefined;
-    if (action === 'command' && !command) throw new Error('command is required for action=command');
-
+  create(serverId: string, nodeId: string, body: any, actor: any): ServerSchedule {
+    if (this.listForServer(serverId).length >= MAX_SCHEDULES_PER_SERVER) {
+      throw new Error(`a server can have at most ${MAX_SCHEDULES_PER_SERVER} schedules`);
+    }
+    const action = this.action(body?.action);
+    const intervalSeconds = this.interval(body?.intervalSeconds ?? body?.interval_seconds, action);
     const now = new Date();
     const schedule: ServerSchedule = {
       id: crypto.randomUUID(),
       serverId,
       nodeId,
-      name: String(body.name).trim(),
-      enabled: body.enabled !== false,
+      name: this.name(body?.name),
+      enabled: body?.enabled !== false,
       intervalSeconds,
       action,
-      command,
+      ...this.actionConfiguration(action, body),
+      actorUserId: this.actorId(actor),
       nextRunAt: new Date(now.getTime() + intervalSeconds * 1000).toISOString(),
-      createdAt: now.toISOString()
+      createdAt: now.toISOString(),
     };
 
     this.schedules.set(schedule.id, schedule);
@@ -82,41 +143,32 @@ export class ServerSchedulesService implements OnModuleInit {
     return schedule;
   }
 
-  update(scheduleId: string, serverId: string, body: any): ServerSchedule {
-    const existing = this.schedules.get(scheduleId);
-    if (!existing || existing.serverId !== serverId) throw new Error('schedule not found');
-
-    const intervalSeconds = body?.intervalSeconds !== undefined
-      ? Number(body.intervalSeconds)
-      : existing.intervalSeconds;
-
-    if (intervalSeconds < 60) throw new Error('intervalSeconds must be at least 60');
-
-    const action = body?.action !== undefined
-      ? (String(body.action) as ServerSchedule['action'])
-      : existing.action;
-
-    if (!['restart', 'start', 'stop', 'command'].includes(action)) {
-      throw new Error("action must be one of: restart, start, stop, command");
-    }
-
-    const command = action === 'command'
-      ? String(body?.command !== undefined ? body.command : existing.command || '').trim()
-      : undefined;
-
-    if (action === 'command' && !command) throw new Error('command is required for action=command');
-
+  update(scheduleId: string, serverId: string, body: any, actor: any): ServerSchedule {
+    const existing = this.getForServer(scheduleId, serverId);
+    const action = body?.action !== undefined ? this.action(body.action) : existing.action;
+    const intervalChanged = body?.intervalSeconds !== undefined || body?.interval_seconds !== undefined;
+    const intervalSeconds = intervalChanged
+      ? this.interval(body?.intervalSeconds ?? body?.interval_seconds, action)
+      : this.interval(existing.intervalSeconds, action);
+    const configurationInput = {
+      command: body?.command !== undefined ? body.command : existing.command,
+      targetPath: body?.targetPath ?? body?.target_path ?? body?.path ?? existing.targetPath,
+      storage: body?.storage ?? existing.storage,
+    };
     const updated: ServerSchedule = {
       ...existing,
-      name: body?.name !== undefined ? String(body.name).trim() : existing.name,
+      name: body?.name !== undefined ? this.name(body.name) : existing.name,
       enabled: body?.enabled !== undefined ? Boolean(body.enabled) : existing.enabled,
       intervalSeconds,
       action,
-      command,
-      // Reset nextRunAt when interval changes
-      nextRunAt: body?.intervalSeconds !== undefined
+      command: undefined,
+      targetPath: undefined,
+      storage: undefined,
+      ...this.actionConfiguration(action, configurationInput),
+      actorUserId: this.actorId(actor),
+      nextRunAt: intervalChanged
         ? new Date(Date.now() + intervalSeconds * 1000).toISOString()
-        : existing.nextRunAt
+        : existing.nextRunAt,
     };
 
     this.schedules.set(scheduleId, updated);
@@ -127,9 +179,7 @@ export class ServerSchedulesService implements OnModuleInit {
   }
 
   remove(scheduleId: string, serverId: string) {
-    const existing = this.schedules.get(scheduleId);
-    if (!existing || existing.serverId !== serverId) throw new Error('schedule not found');
-
+    this.getForServer(scheduleId, serverId);
     this.clearTimer(scheduleId);
     this.schedules.delete(scheduleId);
     this.save();
@@ -137,57 +187,173 @@ export class ServerSchedulesService implements OnModuleInit {
   }
 
   runNow(scheduleId: string, serverId: string): Promise<any> {
-    const schedule = this.schedules.get(scheduleId);
-    if (!schedule || schedule.serverId !== serverId) throw new Error('schedule not found');
-    return this.execute(schedule);
+    return this.executeExclusive(this.getForServer(scheduleId, serverId));
   }
 
-  private schedule(s: ServerSchedule) {
-    this.clearTimer(s.id);
-    if (!s.enabled) return;
+  private schedule(schedule: ServerSchedule) {
+    this.clearTimer(schedule.id);
+    if (!schedule.enabled) return;
 
-    const delayMs = Math.max(1000, new Date(s.nextRunAt || 0).getTime() - Date.now());
-    const timer = setTimeout(async () => {
-      await this.execute(s);
+    const dueIn = Math.max(1000, new Date(schedule.nextRunAt || 0).getTime() - Date.now());
+    const timer = setTimeout(() => {
+      if (dueIn > MAX_TIMER_MS) {
+        this.schedule(schedule);
+        return;
+      }
+      void this.runScheduled(schedule);
+    }, Math.min(dueIn, MAX_TIMER_MS));
+    this.timers.set(schedule.id, timer);
+  }
+
+  private async runScheduled(scheduled: ServerSchedule) {
+    try {
+      await this.executeExclusive(scheduled);
+    } catch (error: any) {
+      this.logger.error(`Schedule "${scheduled.name}" (${scheduled.id}) failed: ${error?.message || error}`);
+    } finally {
+      const current = this.schedules.get(scheduled.id);
+      if (!current || current !== scheduled) return;
       const next: ServerSchedule = {
-        ...s,
+        ...current,
         lastRunAt: new Date().toISOString(),
-        nextRunAt: new Date(Date.now() + s.intervalSeconds * 1000).toISOString()
+        nextRunAt: new Date(Date.now() + current.intervalSeconds * 1000).toISOString(),
       };
-      this.schedules.set(s.id, next);
+      this.schedules.set(current.id, next);
       this.save();
       this.schedule(next);
-    }, delayMs);
-
-    this.timers.set(s.id, timer);
+    }
   }
 
-  private async execute(s: ServerSchedule) {
-    this.logger.log(`Running schedule "${s.name}" (${s.action}) for server ${s.serverId} on ${s.nodeId}`);
-    try {
-      const server = await this.registry.get(s.serverId);
-      if (this.registry.isFrozen(server)) throw new Error('server is frozen by an administrator');
-      switch (s.action) {
-        case 'restart':
-          await this.databases.powerAllForServer(s.serverId, 'restart');
-          return await this.client.restartServer(s.nodeId, s.serverId);
-        case 'start':
-          await this.databases.powerAllForServer(s.serverId, 'start');
-          return await this.client.startServer(s.nodeId, s.serverId);
-        case 'stop': {
-          const result = await this.client.stopServer(s.nodeId, s.serverId);
-          await this.databases.powerAllForServer(s.serverId, 'stop');
-          return result;
-        }
-        case 'command':
-          return await this.client.sendCommand(s.nodeId, s.serverId, s.command!);
-        default:
-          throw new Error(`unknown action: ${s.action}`);
-      }
-    } catch (err: any) {
-      this.logger.error(`Schedule "${s.name}" (${s.id}) failed: ${err?.message}`);
-      throw err;
+  private executeExclusive(schedule: ServerSchedule) {
+    if (this.executions.has(schedule.id)) throw new Error('schedule is already running');
+    const execution = this.execute(schedule).finally(() => this.executions.delete(schedule.id));
+    this.executions.set(schedule.id, execution);
+    return execution;
+  }
+
+  private async execute(schedule: ServerSchedule) {
+    const server = await this.registry.get(schedule.serverId);
+    if (!server) throw new Error('server not found');
+    if (this.registry.isFrozen(server)) throw new Error('server is frozen by an administrator');
+    const actor = schedule.actorUserId ? await this.users.findByIdForAuth(schedule.actorUserId) : undefined;
+    const permission = this.requiredPermission(schedule.action);
+    if (!actor || !this.registry.canPerform(server, actor, 'schedules') || !this.registry.canPerform(server, actor, permission)) {
+      throw new Error(`schedule owner no longer has schedules and ${permission} permission`);
     }
+
+    this.logger.log(`Running schedule "${schedule.name}" (${schedule.action}) for server ${schedule.serverId} on ${server.nodeId}`);
+    let result: any;
+    switch (schedule.action) {
+      case 'restart':
+        await this.databases.powerAllForServer(server.id, 'restart');
+        result = await this.client.restartServer(server.nodeId, server.id);
+        break;
+      case 'start':
+        await this.databases.powerAllForServer(server.id, 'start');
+        result = await this.client.startServer(server.nodeId, server.id);
+        break;
+      case 'stop':
+        result = await this.client.stopServer(server.nodeId, server.id);
+        await this.databases.powerAllForServer(server.id, 'stop');
+        break;
+      case 'command':
+        result = await this.client.sendCommand(server.nodeId, server.id, schedule.command!);
+        break;
+      case 'backup_create':
+        result = await this.backups.create(server, schedule.storage);
+        break;
+      case 'backup_delete':
+        result = await this.backups.deleteOldest(server, schedule.storage);
+        break;
+      case 'clear_directory':
+        result = await this.clearDirectory(server.nodeId, server.id, schedule.targetPath!);
+        break;
+      default:
+        throw new Error(`unknown schedule action: ${schedule.action}`);
+    }
+    if (result?.success === false) throw new Error('agent rejected scheduled action');
+    this.activityLog.log({
+      event: 'server.schedule_executed',
+      userId: actor.id,
+      userEmail: actor.email,
+      serverId: server.id,
+      serverName: server.name,
+      nodeId: server.nodeId,
+      meta: { scheduleId: schedule.id, action: schedule.action },
+    });
+    return result;
+  }
+
+  private async clearDirectory(nodeId: string, serverId: string, targetPath: string) {
+    const normalizedPath = this.targetPath(targetPath);
+    const response: any = await this.client.listDirectory(nodeId, serverId, normalizedPath);
+    if (response?.success === false) throw new Error('agent rejected directory listing');
+    const items = response?.data?.items ?? response?.items;
+    if (!Array.isArray(items)) throw new Error('agent returned an invalid directory listing');
+    if (items.length > MAX_CLEAR_ITEMS) throw new Error(`directory contains more than ${MAX_CLEAR_ITEMS} items`);
+    const names = items.map(item => String(item?.name || ''));
+    if (names.some(name => !name || name === '.' || name === '..' || /[\\/\0]/.test(name))) {
+      throw new Error('agent returned an unsafe directory entry');
+    }
+    for (const name of names) {
+      const result: any = await this.client.deleteFileOrDirectory(nodeId, serverId, `${normalizedPath}/${name}`);
+      if (result?.success === false) throw new Error(`agent could not delete an item from ${normalizedPath}`);
+    }
+    return { success: true, deleted: names.length };
+  }
+
+  private action(value: unknown): ServerScheduleAction {
+    const action = String(value || 'restart') as ServerScheduleAction;
+    if (!ACTIONS.has(action)) throw new Error(`action must be one of: ${Array.from(ACTIONS).join(', ')}`);
+    return action;
+  }
+
+  private actionConfiguration(action: ServerScheduleAction, body: any) {
+    if (action === 'command') {
+      const command = String(body?.command || '').trim();
+      if (!command || command.length > 2048 || /[\r\n\0]/.test(command)) throw new Error('command must be a single line between 1 and 2048 characters');
+      return { command };
+    }
+    if (action === 'clear_directory') return { targetPath: this.targetPath(body?.targetPath ?? body?.target_path ?? body?.path) };
+    if (action === 'backup_create' || action === 'backup_delete') return { storage: this.storage(body?.storage) };
+    return {};
+  }
+
+  private targetPath(value: unknown) {
+    const raw = String(value || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (!raw || raw.length > 1024 || /[\0-\x1f\x7f]/.test(raw)) throw new Error('targetPath must identify a non-root directory');
+    const segments = raw.split('/');
+    if (segments.some(segment => !segment || segment === '.' || segment === '..')) throw new Error('targetPath contains an unsafe path segment');
+    return segments.join('/');
+  }
+
+  private storage(value: unknown): BackupStorage {
+    const storage = String(value || 'local').toLowerCase();
+    if (storage !== 'local' && storage !== 's3') throw new Error('storage must be local or s3');
+    return storage;
+  }
+
+  private interval(value: unknown, action: ServerScheduleAction) {
+    const interval = Number(value);
+    const minimum = ['backup_create', 'backup_delete', 'clear_directory'].includes(action)
+      ? MIN_DESTRUCTIVE_INTERVAL_SECONDS
+      : MIN_INTERVAL_SECONDS;
+    if (!Number.isSafeInteger(interval) || interval < minimum || interval > MAX_INTERVAL_SECONDS) {
+      throw new Error(`intervalSeconds must be an integer between ${minimum} and ${MAX_INTERVAL_SECONDS}`);
+    }
+    return interval;
+  }
+
+  private name(value: unknown) {
+    const name = String(value || '').trim();
+    if (!name || name.length > 160 || /[\0-\x1f\x7f]/.test(name)) throw new Error('name must contain between 1 and 160 visible characters');
+    return name;
+  }
+
+  private actorId(actor: any) {
+    const id = String(actor?.id || '').trim();
+    if (!id) throw new Error('schedule owner is required');
+    return id;
   }
 
   private clearTimer(id: string) {
@@ -200,9 +366,9 @@ export class ServerSchedulesService implements OnModuleInit {
     if (!fs.existsSync(this.dataFile)) return;
     try {
       const parsed = JSON.parse(fs.readFileSync(this.dataFile, 'utf8')) as ServerSchedule[];
-      for (const s of parsed) this.schedules.set(s.id, s);
+      if (Array.isArray(parsed)) for (const schedule of parsed) if (schedule?.id) this.schedules.set(schedule.id, schedule);
     } catch {
-      // Ignore corrupt file
+      // Ignore corrupt fallback data; it must never be executed.
     }
   }
 

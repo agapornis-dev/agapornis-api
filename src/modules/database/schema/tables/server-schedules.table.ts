@@ -13,6 +13,9 @@ export const SERVER_SCHEDULES_TABLE: CollectionTable = {
     { name: 'interval_seconds', type: 'INTEGER NOT NULL' },
     { name: 'action', type: 'VARCHAR(24) NOT NULL' },
     { name: 'command', type: 'TEXT' },
+    { name: 'target_path', type: 'TEXT' },
+    { name: 'storage', type: 'VARCHAR(16)' },
+    { name: 'actor_user_id', type: 'VARCHAR(64)' },
     { name: 'last_run_at', type: '${date}' },
     { name: 'next_run_at', type: '${date}' },
     { name: 'created_at', type: '${date} NOT NULL' },
@@ -20,6 +23,7 @@ export const SERVER_SCHEDULES_TABLE: CollectionTable = {
   toRow: (v: any) => [
     v.serverId, v.nodeId, v.name, v.enabled,
     v.intervalSeconds, v.action, v.command || null,
+    v.targetPath || null, v.storage || null, v.actorUserId || null,
     v.lastRunAt || null, v.nextRunAt || null, v.createdAt,
   ],
   fromRow: (r: any) => ({
@@ -31,6 +35,9 @@ export const SERVER_SCHEDULES_TABLE: CollectionTable = {
     intervalSeconds: Number(r.interval_seconds),
     action: r.action,
     command: r.command || undefined,
+    targetPath: r.target_path || undefined,
+    storage: r.storage || undefined,
+    actorUserId: r.actor_user_id || undefined,
     lastRunAt: r.last_run_at ? ts(r.last_run_at) : undefined,
     nextRunAt: r.next_run_at ? ts(r.next_run_at) : undefined,
     createdAt: ts(r.created_at),

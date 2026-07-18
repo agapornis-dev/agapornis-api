@@ -31,6 +31,7 @@
     "test:two-factor-rate-limit": "node scripts/two-factor-rate-limit-test.cjs",
     "test:role-policy": "node scripts/role-policy-test.cjs",
     "test:settings-policy": "node scripts/settings-policy-test.cjs",
+    "test:automation-security": "node scripts/server-automation-security-test.cjs",
     "test:agent-update-rules": "node scripts/agent-update-rules-test.cjs",
     "test:certificate-rules": "node scripts/certificate-rules-test.cjs",
     "test:postgres-concurrency": "node scripts/postgres-concurrency-test.mjs"

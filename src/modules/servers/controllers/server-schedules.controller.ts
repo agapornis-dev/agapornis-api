@@ -5,6 +5,7 @@ import { Roles } from '../../security/roles.decorator';
 import { RolesGuard } from '../../security/roles.guard';
 import { ServerRouteSupportService } from '../services/server-route-support.service';
 import { ServerSchedulesService } from '../services/server-schedules.service';
+import { ServerRegistryService } from '../services/server-registry.service';
 import { CreateServerScheduleDto, UpdateServerScheduleDto } from '../dto/server-schedule.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -13,7 +14,8 @@ export class ServerSchedulesController {
   constructor(
     private readonly schedules: ServerSchedulesService,
     private readonly activityLog: ActivityLogService,
-    private readonly support: ServerRouteSupportService
+    private readonly support: ServerRouteSupportService,
+    private readonly registry: ServerRegistryService,
   ) {}
 
   @Get(':serverId/activity')
@@ -33,8 +35,10 @@ export class ServerSchedulesController {
   @Roles('user')
   async listSchedules(@Param('id') id: string, @Param('serverId') serverId: string, @Req() req: any) {
     this.support.requireNotSupport(req.user, 'view schedules');
-    await this.support.requireNodeServerPermission(id, serverId, req.user, 'schedules');
-    return this.schedules.listForServer(serverId).map(schedule => this.scheduleResponse(schedule));
+    const server = await this.support.requireNodeServerPermission(id, serverId, req.user, 'schedules');
+    return this.schedules.listForServer(serverId)
+      .filter(schedule => this.registry.canPerform(server, req.user, this.schedules.requiredPermission(schedule.action)))
+      .map(schedule => this.scheduleResponse(schedule));
   }
 
   @Post(':serverId/schedules')
@@ -48,8 +52,10 @@ export class ServerSchedulesController {
     this.support.requireNotSupport(req.user, 'create schedules');
     const server = await this.support.requireNodeServerPermission(id, serverId, req.user, 'schedules');
     try {
-      return this.scheduleResponse(this.schedules.create(serverId, server.nodeId, body));
+      await this.support.requireNodeServerPermission(id, serverId, req.user, this.schedules.requiredPermission(body?.action || 'restart'));
+      return this.scheduleResponse(this.schedules.create(serverId, server.nodeId, body, req.user));
     } catch (err: any) {
+      if (err instanceof HttpException) throw err;
       throw new HttpException(err.message, HttpStatus.BAD_REQUEST);
     }
   }
@@ -66,8 +72,11 @@ export class ServerSchedulesController {
     this.support.requireNotSupport(req.user, 'change schedules');
     await this.support.requireNodeServerPermission(id, serverId, req.user, 'schedules');
     try {
-      return this.scheduleResponse(this.schedules.update(scheduleId, serverId, body));
+      const existing = this.schedules.getForServer(scheduleId, serverId);
+      await this.support.requireNodeServerPermission(id, serverId, req.user, this.schedules.requiredPermission(body?.action ?? existing.action));
+      return this.scheduleResponse(this.schedules.update(scheduleId, serverId, body, req.user));
     } catch (err: any) {
+      if (err instanceof HttpException) throw err;
       throw new HttpException(err.message, HttpStatus.BAD_REQUEST);
     }
   }
@@ -83,8 +92,11 @@ export class ServerSchedulesController {
     this.support.requireNotSupport(req.user, 'delete schedules');
     await this.support.requireNodeServerPermission(id, serverId, req.user, 'schedules');
     try {
+      const schedule = this.schedules.getForServer(scheduleId, serverId);
+      await this.support.requireNodeServerPermission(id, serverId, req.user, this.schedules.requiredPermission(schedule.action));
       return this.schedules.remove(scheduleId, serverId);
     } catch (err: any) {
+      if (err instanceof HttpException) throw err;
       throw new HttpException(err.message, HttpStatus.NOT_FOUND);
     }
   }
@@ -100,9 +112,12 @@ export class ServerSchedulesController {
     this.support.requireNotSupport(req.user, 'run schedules');
     await this.support.requireNodeServerPermission(id, serverId, req.user, 'schedules');
     try {
+      const schedule = this.schedules.getForServer(scheduleId, serverId);
+      await this.support.requireNodeServerPermission(id, serverId, req.user, this.schedules.requiredPermission(schedule.action));
       await this.schedules.runNow(scheduleId, serverId);
       return { ran: true };
     } catch (err: any) {
+      if (err instanceof HttpException) throw err;
       throw new HttpException(err.message, HttpStatus.BAD_REQUEST);
     }
   }
@@ -115,6 +130,8 @@ export class ServerSchedulesController {
       intervalSeconds: schedule.intervalSeconds,
       action: schedule.action,
       command: schedule.command,
+      targetPath: schedule.targetPath,
+      storage: schedule.storage,
       lastRunAt: schedule.lastRunAt,
       nextRunAt: schedule.nextRunAt
     };

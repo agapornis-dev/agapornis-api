@@ -167,6 +167,9 @@ export class DatabaseMigrations {
     await this.ensureColumn('webhook_targets', 'owner_user_id', 'VARCHAR(64)');
     await this.ensureColumn('webhook_targets', 'provider', "VARCHAR(40) NOT NULL DEFAULT 'generic'");
     await this.ensureColumn('webhook_targets', 'chat_id', 'VARCHAR(160)');
+    await this.ensureColumn('server_schedules', 'target_path', 'TEXT');
+    await this.ensureColumn('server_schedules', 'storage', 'VARCHAR(16)');
+    await this.ensureColumn('server_schedules', 'actor_user_id', 'VARCHAR(64)');
 
     await this.ensureAgentCertificateColumns(timestamp);
     await this.ensureAgentPlacementColumns();

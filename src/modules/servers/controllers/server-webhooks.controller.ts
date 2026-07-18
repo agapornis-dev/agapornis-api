@@ -6,6 +6,15 @@ import { WebhooksService } from '../../webhooks/webhooks.service';
 import { ServerRouteSupportService } from '../services/server-route-support.service';
 import { CreateServerWebhookDto } from '../dto/server-webhook.dto';
 
+const SERVER_WEBHOOK_EVENTS = new Set([
+  'server.created',
+  'server.started',
+  'server.stopped',
+  'server.restarted',
+  'server.egg_changed',
+  'server.deleted',
+]);
+
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('agents/:id/servers')
 export class ServerWebhooksController {
@@ -18,7 +27,7 @@ export class ServerWebhooksController {
   @Roles('user')
   async listServerWebhooks(@Param('id') id: string, @Param('serverId') serverId: string, @Req() req: any) {
     this.support.requireNotSupport(req.user, 'view server webhooks');
-    await this.support.requireNodeServerPermission(id, serverId, req.user, 'settings');
+    await this.support.requireNodeServerPermission(id, serverId, req.user, 'webhooks');
     return this.webhooks.listTargetSummariesFor({ scope: 'server', serverId });
   }
 
@@ -26,14 +35,18 @@ export class ServerWebhooksController {
   @Roles('user')
   async createServerWebhook(@Param('id') id: string, @Param('serverId') serverId: string, @Body() body: CreateServerWebhookDto, @Req() req: any) {
     this.support.requireNotSupport(req.user, 'create server webhooks');
-    const server = await this.support.requireNodeServerPermission(id, serverId, req.user, 'settings');
+    const server = await this.support.requireNodeServerPermission(id, serverId, req.user, 'webhooks');
     try {
+      const events = Array.from(new Set((body?.events || []).map(String)));
+      if (events.length === 0 || events.some(event => !SERVER_WEBHOOK_EVENTS.has(event))) {
+        throw new Error('at least one valid server webhook event is required');
+      }
       const target = await this.webhooks.createTarget({
         ...body,
         scope: 'server',
         serverId,
         ownerUserId: server.ownerUserId || req.user.id,
-        events: Array.isArray(body?.events) && body.events.length ? body.events : ['server.up', 'server.down']
+        events,
       });
       return this.webhooks.targetSummary(target);
     } catch (error: any) {
@@ -50,7 +63,7 @@ export class ServerWebhooksController {
     @Req() req: any
   ) {
     this.support.requireNotSupport(req.user, 'test server webhooks');
-    const server = await this.support.requireNodeServerPermission(id, serverId, req.user, 'settings');
+    const server = await this.support.requireNodeServerPermission(id, serverId, req.user, 'webhooks');
     const result = await this.webhooks.dispatch('server.webhook.test', {
       nodeId: id,
       serverId,
@@ -69,7 +82,7 @@ export class ServerWebhooksController {
     @Req() req: any
   ) {
     this.support.requireNotSupport(req.user, 'delete server webhooks');
-    await this.support.requireNodeServerPermission(id, serverId, req.user, 'settings');
+    await this.support.requireNodeServerPermission(id, serverId, req.user, 'webhooks');
     try {
       return await this.webhooks.deleteTargetFor(targetId, { scope: 'server', serverId });
     } catch (error: any) {

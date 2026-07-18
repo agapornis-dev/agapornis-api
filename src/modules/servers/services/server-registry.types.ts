@@ -34,7 +34,7 @@ export interface ServerRecord {
   createdAt: string;
 }
 
-export const SERVER_PERMISSION_SCOPES = ['console.view', 'console.send', 'files.view', 'files.write', 'power', 'settings', 'databases', 'backups', 'schedules'] as const;
+export const SERVER_PERMISSION_SCOPES = ['console.view', 'console.send', 'files.view', 'files.write', 'power', 'settings', 'databases', 'webhooks', 'backups', 'schedules'] as const;
 export type ServerPermissionScope = typeof SERVER_PERMISSION_SCOPES[number];
 export type CollaboratorPermission = 'read_only' | 'operator' | 'custom';
 export interface ServerCollaborator { userId: string; permission: CollaboratorPermission; permissions: ServerPermissionScope[]; }

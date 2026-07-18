@@ -25,6 +25,7 @@ import { PanelSettingsService } from '../../settings/panel-settings.service';
 import { BackupCatalogService } from '../services/backup-catalog.service';
 import { ServerDatabasesService } from '../services/server-databases.service';
 import { CreateServerBackupDto } from '../dto/server-backup.dto';
+import { ServerBackupOperationsService } from '../services/server-backup-operations.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('agents/:id/servers')
@@ -37,6 +38,7 @@ export class ServerBackupsController {
     private readonly settings: PanelSettingsService,
     private readonly backupCatalog: BackupCatalogService,
     private readonly databases: ServerDatabasesService,
+    private readonly backupOperations: ServerBackupOperationsService,
   ) {}
 
   @Post(':serverId/backups')
@@ -56,104 +58,16 @@ export class ServerBackupsController {
       'backups',
     );
 
-    const limit = server.backupLimit ?? 0;
-
-    if (limit <= 0) {
-      throw new HttpException(
-        'backups are not enabled for this server',
-        HttpStatus.FORBIDDEN,
-      );
-    }
-
-    const policy = this.settings.backupPolicy();
-
-    const storage =
-      body?.storage === 's3'
-        ? 's3'
-        : body?.storage === 'local'
-          ? 'local'
-          : policy.defaultStorage;
-
-    if (storage === 's3' && !policy.s3Enabled) {
-      throw new HttpException(
-        'S3 backups are disabled by the Owner',
-        HttpStatus.FORBIDDEN,
-      );
-    }
-
-    const observedAt = new Date().toISOString();
-
-    const listResult: any = await this.support.forward(
-      'list-backups',
-      id,
+    const result = await this.backupOperations.create(server, body?.storage);
+    this.activityLog.log({
+      event: 'server.backup_created',
+      userId: req.user?.id,
+      userEmail: req.user?.email,
       serverId,
-      () => this.client.listBackups(id, serverId, this.settings.backupPolicy().s3Enabled),
-    );
-
-    const existing: any[] = listResult?.data?.backups ?? listResult?.backups ?? [];
-
-    await this.backupCatalog.sync(serverId, existing, observedAt);
-
-    const sameStorage = existing.filter(
-      item => String(item.storage || 'local') === storage,
-    );
-
-    if (storage === 'local' && sameStorage.length >= limit) {
-      throw new HttpException(
-        `backup limit of ${limit} reached - delete an older backup first`,
-        HttpStatus.UNPROCESSABLE_ENTITY,
-      );
-    }
-
-    let reservationId: string;
-
-    try {
-      reservationId = await this.backupCatalog.reserve(serverId);
-    } catch (error: any) {
-      throw new HttpException(
-        error?.message || 'backup limit reached',
-        HttpStatus.UNPROCESSABLE_ENTITY,
-      );
-    }
-
-    try {
-      const resp = await this.support.forward(
-        'create-backup',
-        id,
-        serverId,
-        () =>
-          this.client.createBackup(id, serverId, {
-            storage,
-            retentionCount: storage === 's3' ? Math.min(limit, policy.retentionCount) : 0,
-            encrypt: storage === 's3' && policy.encryptionRequired,
-          }),
-      );
-
-      if (!resp.success) {
-        throw new Error(resp.message || 'agent rejected backup create');
-      }
-
-      await this.backupCatalog.complete(
-        reservationId,
-        serverId,
-        resp.data,
-        storage,
-      );
-
-      this.activityLog.log({
-        event: 'server.backup_created',
-        userId: req.user?.id,
-        userEmail: req.user?.email,
-        serverId,
-        nodeId: id,
-        ip: this.support.clientIp(req),
-      });
-
-      return { success: true };
-    } catch (error) {
-      await this.backupCatalog.fail(reservationId);
-      throw error;
-    }
+      nodeId: id,
+      ip: this.support.clientIp(req),
+    });
+    return result;
   }
 
   @Get(':serverId/backups')
@@ -200,32 +114,18 @@ export class ServerBackupsController {
   ) {
     this.support.requireNotSupport(req.user, 'delete backups');
 
-    await this.support.requireNodeServerPermission(id, serverId, req.user, 'backups');
-
-    const normalizedStorage = this.storage(storage);
-
-    const resp = await this.support.forward(
-      'delete-backup',
-      id,
+    const server = await this.support.requireNodeServerPermission(id, serverId, req.user, 'backups');
+    const result = await this.backupOperations.delete(server, backupId, storage);
+    this.activityLog.log({
+      event: 'server.backup_deleted',
+      userId: req.user?.id,
+      userEmail: req.user?.email,
       serverId,
-      () => this.client.deleteBackup(id, serverId, backupId, normalizedStorage),
-    );
-
-    if (resp.success) {
-      this.activityLog.log({
-        event: 'server.backup_deleted',
-        userId: req.user?.id,
-        userEmail: req.user?.email,
-        serverId,
-        nodeId: id,
-        meta: { backupId },
-        ip: this.support.clientIp(req),
-      });
-
-      await this.backupCatalog.remove(serverId, backupId, normalizedStorage);
-    }
-
-    return { success: Boolean(resp.success) };
+      nodeId: id,
+      meta: { backupId },
+      ip: this.support.clientIp(req),
+    });
+    return result;
   }
 
   @Post(':serverId/backups/:backupId/restore')

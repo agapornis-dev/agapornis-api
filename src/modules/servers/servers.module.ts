@@ -33,6 +33,7 @@ import { AdminUsersService } from '../users/admin-users.service';
 import { PanelSettingsModule } from '../settings/panel-settings.module';
 import { BackupVerificationService } from './services/backup-verification.service';
 import { BackupCatalogService } from './services/backup-catalog.service';
+import { ServerBackupOperationsService } from './services/server-backup-operations.service';
 import { ServerRealtimeService } from './realtime/server-realtime.service';
 import { GameVersionCatalogService } from './services/game-version-catalog.service';
 import { GameVersionCatalogCacheService } from './services/game-version-catalog-cache.service';
@@ -77,6 +78,7 @@ import { RedisModule } from '../redis/redis.module';
     MinecraftModsService,
     BackupVerificationService,
     BackupCatalogService,
+    ServerBackupOperationsService,
     AdminUsersService
   ],
   exports: [ServerRegistryService, ServerRealtimeService, ServerDatabasesService]

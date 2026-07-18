@@ -134,23 +134,31 @@ export class WebhooksService implements OnModuleInit {
   }
 
   async createTarget(body: any) {
-    if (!body?.name) throw new Error('name is required');
-    if (!body?.url) throw new Error('url is required');
+    const name = this.safeText(body?.name, 'name', 160);
+    const rawUrl = String(body?.url || '').trim();
+    if (!rawUrl) throw new Error('url is required');
+    if (rawUrl.length > 2048) throw new Error('url must not exceed 2048 characters');
 
-    const url = await this.safeUrl(body.url);
+    const url = await this.safeUrl(rawUrl);
+    const events: string[] = Array.isArray(body.events) && body.events.length
+      ? Array.from(new Set<string>(body.events.map((event: unknown) => String(event).trim())))
+      : ['*'];
+    if (events.length > 64 || events.some(event => !/^(?:\*|[a-z0-9][a-z0-9._:-]{0,119})$/i.test(event))) {
+      throw new Error('webhook events contain an invalid event name');
+    }
     const target: WebhookTarget = {
       id: crypto.randomUUID(),
-      name: String(body.name),
+      name,
       scope: this.scope(body.scope),
       serverId: body.serverId ? String(body.serverId) : undefined,
       ownerUserId: body.ownerUserId ? String(body.ownerUserId) : undefined,
       provider: this.provider(body.provider),
       url,
-      chatId: body.chatId ? String(body.chatId) : undefined,
-      secret: body.secret ? String(body.secret) : undefined,
+      chatId: body.chatId ? this.safeText(body.chatId, 'chatId', 160) : undefined,
+      secret: body.secret ? this.safeText(body.secret, 'secret', 256) : undefined,
       enabled: body.enabled ?? true,
-      events: Array.isArray(body.events) && body.events.length ? body.events.map(String) : ['*'],
-      headers: body.headers && typeof body.headers === 'object' ? body.headers : {},
+      events,
+      headers: this.validatedHeaders(body.headers),
       createdAt: new Date().toISOString()
     };
 
@@ -292,6 +300,7 @@ export class WebhooksService implements OnModuleInit {
 
       if (target.provider === 'discord') {
         return {
+          allowed_mentions: { parse: [] },
           embeds: [
             {
               title: eventType,
@@ -493,6 +502,8 @@ export class WebhooksService implements OnModuleInit {
       throw new Error('webhook URL must use http or https');
     }
     if (parsed.username || parsed.password) throw new Error('webhook URL must not contain credentials');
+    const port = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
+    if (port !== 80 && port !== 443) throw new Error('webhook URL must use port 80 or 443');
     await this.assertPublicWebhookTarget(parsed.toString());
     return parsed.toString();
   }
@@ -552,6 +563,31 @@ export class WebhooksService implements OnModuleInit {
     ]);
     return Object.fromEntries(Object.entries(headers)
       .filter(([name, value]) => !blocked.has(name.toLowerCase()) && typeof value === 'string'));
+  }
+
+  private validatedHeaders(value: unknown) {
+    if (value === undefined || value === null) return {};
+    if (typeof value !== 'object' || Array.isArray(value)) throw new Error('headers must be an object');
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 32) throw new Error('webhooks may contain at most 32 custom headers');
+    const headers: Record<string, string> = {};
+    for (const [name, rawValue] of entries) {
+      if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/.test(name)) throw new Error('webhook header name is invalid');
+      if (typeof rawValue !== 'string' || rawValue.length > 1024 || /[\r\n\0]/.test(rawValue)) {
+        throw new Error(`webhook header '${name}' contains an invalid value`);
+      }
+      headers[name] = rawValue;
+    }
+    return this.safeHeaders(headers);
+  }
+
+  private safeText(value: unknown, field: string, maxLength: number) {
+    const text = String(value || '').trim();
+    if (!text) throw new Error(`${field} is required`);
+    if (text.length > maxLength || /[\0-\x1f\x7f]/.test(text)) {
+      throw new Error(`${field} contains invalid characters or is too long`);
+    }
+    return text;
   }
 
   private isPrivateAddress(value: string): boolean {
