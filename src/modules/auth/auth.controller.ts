@@ -16,6 +16,7 @@ import { PasswordResetService } from './password-reset.service';
 import { validatePassword } from './password-policy';
 import { Public } from '../security/public.decorator';
 import { ApiConfigService } from '../../common/config/config.service';
+import { trustedRequestIp } from '../../common/security/request-ip';
 import { AuthCreateDto, AuthEmailVerificationConfirmDto, AuthInvitationCreateDto, AuthLoginDto, AuthPasswordChangeDto, AuthPasswordResetConfirmDto, AuthPasswordResetRequestDto, AuthProfileUpdateDto, AuthSocialExchangeDto, AuthTwoFactorDisableDto, AuthTwoFactorEnableDto, AuthTwoFactorLoginDto, AuthTwoFactorRecoveryCodesDto } from './dto/auth.dto';
 import {
   validateAuthCreate,
@@ -484,7 +485,7 @@ export class AuthController {
   }
 
   private clientIp(req: any): string | undefined {
-    return String(req.headers?.['x-forwarded-for'] || req.ip || '').split(',')[0].trim() || undefined;
+    return trustedRequestIp(req);
   }
 
   private passwordResetUrl(token: string) {

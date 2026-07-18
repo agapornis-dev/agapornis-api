@@ -64,7 +64,7 @@ async function main() {
     enabled: true,
     placeholders: count => Array.from({ length: count }, () => '?').join(', '),
     query: async (sql, params = []) => {
-      if (/SELECT \* FROM locations/i.test(sql)) return [location];
+      if (/SELECT\s+locations\.\*/i.test(sql)) return [{ ...location, node_count: locationInUse ? 1 : 0 }];
       if (/COUNT\(\*\).*agents/i.test(sql)) return [{ count: locationInUse ? 1 : 0 }];
       if (/UPDATE locations/i.test(sql)) {
         location = {

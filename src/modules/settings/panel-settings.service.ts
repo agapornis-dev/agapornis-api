@@ -13,6 +13,7 @@ import { RedisService } from '../redis/redis.service';
 import { DatabaseService } from '../database/database.service';
 import { ApiConfigService } from '../../common/config/config.service';
 import { TooManyRequestsError } from '../../common/errors/domain-errors';
+import { trustedRequestIp } from '../../common/security/request-ip';
 import { defaultPanelSettings, MAIL_TEMPLATE_KEYS } from './panel-settings.defaults';
 import { AuthAction, CaptchaProvider, MailTemplateKey, MailTemplateSettings, PanelSettings, PasswordPolicySettings, SocialAuthProvider, SocialAuthProviderSettings, SmtpSettings } from './panel-settings.types';
 export type { CaptchaProvider, MailTemplateKey, MailTemplateSettings, PanelSettings, PasswordPolicySettings, SocialAuthProvider, SmtpSettings } from './panel-settings.types';
@@ -339,8 +340,7 @@ export class PanelSettingsService implements OnModuleInit {
   }
 
   private clientIp(req: any) {
-    const forwarded = String(req?.headers?.['x-forwarded-for'] || '').split(',')[0].trim();
-    return forwarded || req?.ip || req?.socket?.remoteAddress || 'unknown';
+    return trustedRequestIp(req) || 'unknown';
   }
 
   private load() {

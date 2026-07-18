@@ -24,8 +24,8 @@ const panelLogger = new PanelLogger();
 async function bootstrap() {
   const config = new ApiConfigService();
   const clustered = config.bool('API_CLUSTERED') || config.int('API_REPLICAS', 1) > 1;
-  if (clustered && !['postgres', 'mysql'].includes(config.get('DB_CLIENT').toLowerCase())) {
-    throw new Error('Clustered API mode requires DB_CLIENT=postgres or DB_CLIENT=mysql; JSON storage is instance-local.');
+  if (clustered && config.get('DB_CLIENT').toLowerCase() !== 'postgres') {
+    throw new Error('Clustered API mode requires DB_CLIENT=postgres; critical server reservations and state transitions rely on PostgreSQL advisory locks.');
   }
   if (clustered && !config.get('REDIS_URL').trim()) {
     throw new Error('Clustered API mode requires REDIS_URL for distributed jobs, locks, rate limits, and cache invalidation.');

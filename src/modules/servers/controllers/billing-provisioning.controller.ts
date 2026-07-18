@@ -21,6 +21,10 @@ import { BillingWebhookDto, ServerPlanDto } from '../dto/billing-provisioning.dt
 type BillingProvider = 'generic' | 'whmcs' | 'paymenter';
 
 const AUTO_NODE_ID = 'auto-least-memory';
+const BILLING_PROTECTED_VARIABLES = new Set([
+  'MEMORY', 'SERVER_MEMORY', 'SERVER_DISK', 'SERVER_CPU', 'SERVER_CPU_CORES',
+  'CPU_LIMIT', 'CPU_CORES', 'SERVER_IP', 'STARTUP', 'DOCKER_IMAGE', 'SERVER_ID',
+]);
 
 @Controller()
 export class BillingProvisioningController {
@@ -218,14 +222,17 @@ export class BillingProvisioningController {
       swapMemoryStorage: plan.swapMemoryStorage,
       diskMb: plan.diskMb,
       hostPort: 0,
-      dockerImage: this.value(body, 'dockerImage', 'docker_image') || plan.dockerImage,
+      // A matched plan is the authority for images and resource controls.
+      // Legacy payloads still work because resolvePlan copies their values
+      // into the synthetic plan before this point.
+      dockerImage: plan.dockerImage,
       variables: {
         ...plan.variables,
+        ...this.variables(body),
         AGAPORNIS_CPU_PINNING: plan.cpuPinnedThreads ? 'true' : 'false',
         AGAPORNIS_CPU_PINNED_THREADS: plan.cpuPinnedThreads || '',
         AGAPORNIS_SWAP_MEMORY_MB: String(plan.swapMemoryMb || 0),
         AGAPORNIS_SWAP_MEMORY_STORAGE: plan.swapMemoryStorage || 'general',
-        ...this.variables(body)
       }
     };
 
@@ -259,7 +266,7 @@ export class BillingProvisioningController {
     if (reservation.replay) {
       return { action: 'provision', provider, success: true, idempotentReplay: true, planId: plan.id, serverId, nodeId: reservation.record.nodeId, location: this.agents.get(reservation.record.nodeId)?.location || '', user, userCreated: false };
     }
-    const portCount = Math.max(1, Math.min(32, Math.floor(Number(this.value(body, 'portCount', 'port_count', 'ports') || plan.portCount || 1))));
+    const portCount = Math.max(1, Math.min(32, Math.floor(Number(plan.portCount || 1))));
     let allocatedRecord;
     try {
       allocatedRecord = await this.registry.assignPortAllocations(serverId, portCount, node.portRangeStart, node.portRangeEnd);
@@ -473,20 +480,48 @@ export class BillingProvisioningController {
       this.value(body, 'lastName', 'lastname', 'last_name')
     ].filter(Boolean).join(' ');
 
-    return { email: String(email), name: String(name || email) };
+    const normalizedEmail = String(email).trim().toLowerCase();
+    if (normalizedEmail.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      throw new HttpException('customer email is invalid', HttpStatus.BAD_REQUEST);
+    }
+    const normalizedName = String(name || normalizedEmail).trim();
+    if (!normalizedName || normalizedName.length > 160 || /[\0-\x1f\x7f]/.test(normalizedName)) {
+      throw new HttpException('customer name is invalid', HttpStatus.BAD_REQUEST);
+    }
+    return { email: normalizedEmail, name: normalizedName };
   }
 
   private serverName(body: any) {
-    return this.value(body, 'serverName', 'server_name', 'serviceName', 'service_name', 'name');
+    const value = this.value(body, 'serverName', 'server_name', 'serviceName', 'service_name', 'name');
+    if (value === undefined) return undefined;
+    const name = String(value).trim();
+    if (!name || name.length > 160 || /[\0-\x1f\x7f]/.test(name)) {
+      throw new HttpException('server name is invalid', HttpStatus.BAD_REQUEST);
+    }
+    return name;
   }
 
   private serverId(body: any, generate = true) {
     const explicit = this.value(body, 'serverId', 'server_id');
-    if (explicit) return String(explicit);
+    if (explicit) return this.validServerId(explicit);
 
     const serviceId = this.value(body, 'serviceId', 'service_id', 'relid', 'hostingId', 'hosting_id', 'serviceid', 'orderId', 'order_id', 'invoiceId', 'invoice_id');
-    if (serviceId) return `srv-${String(serviceId).replace(/[^a-zA-Z0-9_-]/g, '')}`;
+    if (serviceId) {
+      const raw = String(serviceId).trim();
+      if (/^[A-Za-z0-9_-]{1,120}$/.test(raw)) return `srv-${raw}`;
+      const prefix = raw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80) || 'external';
+      const digest = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
+      return `srv-${prefix}-${digest}`;
+    }
     return generate ? `srv-${crypto.randomUUID().slice(0, 8)}` : '';
+  }
+
+  private validServerId(value: unknown) {
+    const id = String(value || '').trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) {
+      throw new HttpException('serverId is invalid', HttpStatus.BAD_REQUEST);
+    }
+    return id;
   }
 
   private value(body: any, ...keys: string[]) {
@@ -503,7 +538,7 @@ export class BillingProvisioningController {
   }
 
   private variables(body: any) {
-    return normalizeVariables({
+    const variables = normalizeVariables({
       ...this.optionRecord(body?.customfields),
       ...this.optionRecord(body?.customFields),
       ...this.optionRecord(body?.configoptions),
@@ -511,6 +546,16 @@ export class BillingProvisioningController {
       ...(body?.variables || {}),
       ...(body?.env || {})
     });
+    const sanitized: Record<string, string> = {};
+    for (const [key, value] of Object.entries(variables)) {
+      if (!/^[A-Z_][A-Z0-9_]{0,127}$/.test(key)) continue;
+      if (key.startsWith('AGAPORNIS_') || BILLING_PROTECTED_VARIABLES.has(key)) continue;
+      if (value.length > 8192 || /\0/.test(value)) {
+        throw new HttpException(`billing variable '${key}' is invalid`, HttpStatus.BAD_REQUEST);
+      }
+      sanitized[key] = value;
+    }
+    return sanitized;
   }
 
   private lookup(source: any, key: string) {
@@ -534,9 +579,11 @@ export class BillingProvisioningController {
     return source.reduce<Record<string, any>>((acc, item) => {
       const name = item?.name || item?.fieldname || item?.option || item?.key;
       if (!name) return acc;
-      acc[String(name)] = item?.value ?? item?.fieldvalue ?? item?.selected ?? '';
+      const key = String(name);
+      if (key === '__proto__' || key === 'prototype' || key === 'constructor') return acc;
+      acc[key] = item?.value ?? item?.fieldvalue ?? item?.selected ?? '';
       return acc;
-    }, {});
+    }, Object.create(null));
   }
 
   private header(headers: Record<string, string | string[] | undefined>, key: string) {

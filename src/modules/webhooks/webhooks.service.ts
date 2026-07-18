@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as http from 'http';
@@ -239,7 +239,8 @@ export class WebhooksService implements OnModuleInit {
   }
 
   async dispatch(eventType: string, payload: any, targetId?: string, scope?: WebhookTarget['scope']) {
-    const eventNames = this.eventNames(eventType);
+    const normalizedEventType = this.validEventType(eventType);
+    const eventNames = this.eventNames(normalizedEventType);
     const targets = (await this.listTargetsFor({}))
       .filter((target: WebhookTarget) => target.enabled)
       .filter((target: WebhookTarget) => !targetId || target.id === targetId)
@@ -249,11 +250,11 @@ export class WebhooksService implements OnModuleInit {
 
     const results = [];
     for (const target of targets) {
-      results.push(await this.send(target, eventType, payload));
+      results.push(await this.send(target, normalizedEventType, payload));
     }
 
     return {
-      eventType,
+      eventType: normalizedEventType,
       delivered: results.length,
       results
     };
@@ -466,6 +467,14 @@ export class WebhooksService implements OnModuleInit {
     };
 
     return [eventType, ...(aliases[eventType] || [])];
+  }
+
+  private validEventType(value: unknown) {
+    const eventType = String(value || '').trim();
+    if (!/^[a-z0-9][a-z0-9._:-]{0,119}$/i.test(eventType)) {
+      throw new BadRequestException('webhook event type is invalid');
+    }
+    return eventType;
   }
 
   private eventSummary(event: any) {

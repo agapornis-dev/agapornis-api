@@ -27,6 +27,7 @@ import {
   ServerRecord,
   ServerSettingsPatch,
 } from './server-registry.types';
+import { normalizeServerStatus } from './server-status';
 
 export type { CollaboratorPermission, ServerAccess, ServerCollaborator, ServerPermissionScope, ServerRecord, ServerSettingsPatch } from './server-registry.types';
 export { SERVER_PERMISSION_SCOPES } from './server-registry.types';
@@ -34,6 +35,7 @@ export { SERVER_PERMISSION_SCOPES } from './server-registry.types';
 @Injectable()
 export class ServerRegistryService implements OnModuleInit {
   private readonly servers = new Map<string, ServerRecord>();
+  private readonly reservationLocks = new Map<string, Promise<void>>();
   private readonly dataFile = path.join(__dirname, '..', '..', '..', 'data', 'servers.json');
 
   constructor(
@@ -85,7 +87,7 @@ export class ServerRegistryService implements OnModuleInit {
         nodeId: row.node_id,
         name: row.name,
         ownerUserId: row.owner_user_id || undefined,
-        status: row.status,
+        status: normalizeServerStatus(row.status),
         createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at
       })) as ServerRecord[];
       if (!servers.length) return servers;
@@ -131,6 +133,7 @@ export class ServerRegistryService implements OnModuleInit {
   }
 
   async upsert(record: ServerRecord) {
+    record = { ...record, status: normalizeServerStatus(record.status) };
     if (this.database.enabled) {
       if (this.database.clientType === 'postgres') {
         await this.database.query(
@@ -237,11 +240,13 @@ export class ServerRegistryService implements OnModuleInit {
 
   async reserve(record: ServerRecord): Promise<{ record: ServerRecord; replay: boolean }> {
     if (this.database.clientType !== 'postgres') {
-      const existing = await this.get(record.id);
-      if (existing) throw new Error('server id is already provisioning or exists');
-      const reserved = { ...record, status: 'provisioning' };
-      await this.upsert(reserved);
-      return { record: reserved, replay: false };
+      return this.withReservationLock(record.id, async () => {
+        const existing = await this.get(record.id);
+        if (existing) return this.replayReservation(existing, record);
+        const reserved = { ...record, status: 'provisioning' };
+        await this.upsert(reserved);
+        return { record: reserved, replay: false };
+      });
     }
     return this.database.transaction(async tx => {
       await this.database.advisoryLock(tx, `server-id:${record.id}`);
@@ -250,8 +255,7 @@ export class ServerRegistryService implements OnModuleInit {
       const rows = await tx.query(`SELECT * FROM servers WHERE id = $1 FOR UPDATE`, [record.id]);
       if (rows[0]) {
         const existing = this.rowToRecord(rows[0]);
-        if (['created', 'running', 'stopped'].includes(existing.status)) return { record: existing, replay: true };
-        throw new Error(`server is already ${existing.status}`);
+        return this.replayReservation(existing, record);
       }
       await this.insertReserved(tx, record);
       return { record, replay: false };
@@ -261,8 +265,14 @@ export class ServerRegistryService implements OnModuleInit {
   async reserveRandomPort(record: ServerRecord, start: number, end: number): Promise<{ record: ServerRecord; replay: boolean }> {
     const min = Math.min(start, end); const max = Math.max(start, end);
     if (this.database.clientType !== 'postgres') {
-      const port = await this.allocateRandomPort(record.nodeId, min, max);
-      return this.reserve({ ...record, assignedHostPort: port });
+      return this.withReservationLock(record.id, async () => {
+        const existing = await this.get(record.id);
+        if (existing) return this.replayReservation(existing, record);
+        const port = await this.allocateRandomPort(record.nodeId, min, max);
+        const reserved = { ...record, assignedHostPort: port, status: 'provisioning' };
+        await this.upsert(reserved);
+        return { record: reserved, replay: false };
+      });
     }
     return this.database.transaction(async tx => {
       await this.database.advisoryLock(tx, `server-id:${record.id}`);
@@ -270,8 +280,7 @@ export class ServerRegistryService implements OnModuleInit {
       const existingRows = await tx.query(`SELECT * FROM servers WHERE id = $1 FOR UPDATE`, [record.id]);
       if (existingRows[0]) {
         const existing = this.rowToRecord(existingRows[0]);
-        if (['created', 'running', 'stopped'].includes(existing.status)) return { record: existing, replay: true };
-        throw new Error(`server is already ${existing.status}`);
+        return this.replayReservation(existing, record);
       }
       const ports = await tx.query(
         `SELECT candidate::int AS port FROM generate_series($1::int, $2::int) candidate
@@ -342,6 +351,7 @@ export class ServerRegistryService implements OnModuleInit {
   async finalizeProvisioning(id: string, assignedHostPort?: number) {
     if (this.database.clientType !== 'postgres') {
       const current = await this.get(id); if (!current) return undefined;
+      if (current.status !== 'provisioning') throw new Error(`server cannot be finalized from status ${current.status}`);
       const next = { ...current, assignedHostPort: assignedHostPort || current.assignedHostPort, status: 'created' };
       await this.upsert(next); return next;
     }
@@ -459,6 +469,7 @@ export class ServerRegistryService implements OnModuleInit {
   }
 
   async setStatus(id: string, status: string) {
+    status = normalizeServerStatus(status);
     if (this.database.clientType === 'postgres') {
       const rows = await this.database.query(
         `UPDATE servers SET status = $1 WHERE id = $2 AND status NOT IN ('provisioning', 'deleting', 'transferring') RETURNING *`,
@@ -468,6 +479,7 @@ export class ServerRegistryService implements OnModuleInit {
     }
     const record = await this.get(id);
     if (!record) return undefined;
+    if (['provisioning', 'deleting', 'transferring'].includes(record.status)) return record;
     const next = { ...record, status };
     await this.upsert(next);
     return next;
@@ -845,7 +857,7 @@ export class ServerRegistryService implements OnModuleInit {
       ownerUserId: row.owner_user_id || undefined,
       assignedHostPort: row.assigned_host_port ? Number(row.assigned_host_port) : undefined,
       assignedPorts: this.portMappings(this.parseVariables(row.variables)).map(mapping => mapping.hostPort),
-      status: row.status,
+      status: normalizeServerStatus(row.status),
       memoryBytes: row.memory_bytes ? Number(row.memory_bytes) : undefined,
       cpuLimitPercentage: row.cpu_limit_percentage ? Number(row.cpu_limit_percentage) : undefined,
       cpuCores: row.cpu_cores ? Number(row.cpu_cores) : undefined,
@@ -1014,11 +1026,40 @@ export class ServerRegistryService implements OnModuleInit {
     if (!fs.existsSync(this.dataFile)) return;
     const parsed = JSON.parse(fs.readFileSync(this.dataFile, 'utf8')) as ServerRecord[];
     for (const server of parsed) {
+      server.status = normalizeServerStatus(server.status);
       server.collaboratorUserIds ||= [];
       server.collaborators ||= server.collaboratorUserIds.map(userId => ({ userId, permission: 'operator', permissions: [...SERVER_PERMISSION_SCOPES] }));
       server.eggChangeAllowed ??= true;
       server.allowedEggIds ||= [];
       this.servers.set(server.id, server);
+    }
+  }
+
+  private replayReservation(existing: ServerRecord, requested: ServerRecord) {
+    const stable = ['created', 'running', 'starting', 'stopped', 'offline', 'frozen'].includes(existing.status);
+    const sameIdentity = existing.nodeId === requested.nodeId
+      && String(existing.ownerUserId || '') === String(requested.ownerUserId || '')
+      && String(existing.eggId || '') === String(requested.eggId || '');
+    if (stable && sameIdentity) return { record: existing, replay: true };
+    if (!stable) throw new Error(`server is already ${existing.status}`);
+    throw new Error('server id already belongs to a different server');
+  }
+
+  private async withReservationLock<T>(id: string, action: () => Promise<T>): Promise<T> {
+    // PostgreSQL uses transaction-scoped advisory locks. JSON and single-process
+    // MySQL deployments still need serialization across concurrent webhooks.
+    const locks = this.reservationLocks;
+    const previous = locks.get(id) || Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    const tail = previous.then(() => current);
+    locks.set(id, tail);
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+      if (locks.get(id) === tail) locks.delete(id);
     }
   }
 

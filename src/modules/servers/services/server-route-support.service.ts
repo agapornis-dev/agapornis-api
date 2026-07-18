@@ -17,6 +17,8 @@ import { UsersService } from '../../users/users.service';
 import { MailService } from '../../settings/mail.service';
 import { MailTemplateKey } from '../../settings/panel-settings.service';
 import { allowedDatabaseTypes, databasePortRangeMode } from './database-catalog';
+import { trustedRequestIp } from '../../../common/security/request-ip';
+import { normalizeServerStatus } from './server-status';
 
 const RESOURCE_VARIABLE_KEYS = new Set([
   'MEMORY',
@@ -539,7 +541,7 @@ export class ServerRouteSupportService {
   }
 
   clientIp(req: any): string | undefined {
-    return String(req.headers?.['x-forwarded-for'] || req.ip || '').split(',')[0].trim() || undefined;
+    return trustedRequestIp(req);
   }
 
   async dispatchServerEvent(eventType: string, nodeId: string, serverId: string, status: string) {
@@ -553,10 +555,12 @@ export class ServerRouteSupportService {
   }
 
   async recordObservedStatus(nodeId: string, serverId: string, status: string) {
+    status = normalizeServerStatus(status);
     const server = await this.registry.get(serverId);
     const previous = server?.status;
     if (!server) return status;
     if (this.registry.isFrozen(server)) return 'frozen';
+    if (previous && ['provisioning', 'deleting', 'transferring'].includes(previous)) return previous;
     if (previous === status) return status;
 
     await this.registry.setStatus(serverId, status);

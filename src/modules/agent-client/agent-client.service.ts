@@ -4,6 +4,7 @@ import * as protoLoader from '@grpc/proto-loader';
 import { AgentConnectionService, ObservedNodeCertificate } from './agent-connection.service';
 import { ApiConfigService } from '../../common/config/config.service';
 import { resolveProtoPath } from '../../common/proto-path';
+import { normalizeServerStatus } from '../servers/services/server-status';
 export type { ObservedNodeCertificate } from './agent-connection.service';
 
 const PROTO_PATH = resolveProtoPath('server.proto');
@@ -231,8 +232,8 @@ export class AgentClientService {
     return this.callServer(nodeId, 'RollbackCertificate', {}, undefined, CERTIFICATE_TIMEOUT_MS);
   }
 
-  getServerStats(nodeId: string, serverId: string, token?: string, signal?: AbortSignal) {
-    return this.callServer(
+  async getServerStats(nodeId: string, serverId: string, token?: string, signal?: AbortSignal) {
+    const data: any = await this.callServer(
       nodeId,
       'GetServerStats',
       { server_id: serverId },
@@ -240,6 +241,8 @@ export class AgentClientService {
       STATS_TIMEOUT_MS,
       signal
     );
+    if (data?.status) data.status = normalizeServerStatus(data.status);
+    return data;
   }
 
   sendCommand(nodeId: string, serverId: string, command: string, token?: string) {

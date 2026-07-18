@@ -1,12 +1,14 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { PanelSettingsService, SocialAuthProvider } from '../settings/panel-settings.service';
 import { UsersService } from '../users/users.service';
+import { ApiConfigService } from '../../common/config/config.service';
 
 @Injectable()
 export class SocialAuthService {
   constructor(
     private readonly settings: PanelSettingsService,
-    private readonly users: UsersService
+    private readonly users: UsersService,
+    private readonly config: ApiConfigService,
   ) {}
 
   authorizationUrl(
@@ -106,7 +108,8 @@ export class SocialAuthService {
 
   private validateFlowInput(input: { redirectUri: string; state: string; codeChallenge: string }) {
     this.validateRedirectUri(input.redirectUri);
-    if (!input.state || input.state.length < 32 || !input.codeChallenge || input.codeChallenge.length < 43) {
+    if (!/^[A-Za-z0-9_-]{32,256}$/.test(String(input.state || ''))
+      || !/^[A-Za-z0-9_-]{43,128}$/.test(String(input.codeChallenge || ''))) {
       throw new HttpException('invalid OAuth state or PKCE challenge', HttpStatus.BAD_REQUEST);
     }
   }
@@ -114,10 +117,22 @@ export class SocialAuthService {
   private validateRedirectUri(value: string) {
     try {
       const url = new URL(value);
-      if (!['http:', 'https:'].includes(url.protocol) || url.pathname !== '/api/auth/oauth/callback') {
+      if (!['http:', 'https:'].includes(url.protocol)
+        || url.username
+        || url.password
+        || url.pathname !== '/api/auth/oauth/callback'
+        || url.search
+        || url.hash) {
         throw new Error('invalid callback');
       }
-      if (url.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(url.hostname)) {
+      const panelUrl = this.settings.panelPublicUrl();
+      const panelOrigin = panelUrl ? new URL(panelUrl).origin : '';
+      const localDevelopmentOrigin = !this.config.isProduction()
+        && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+      if ((!panelOrigin || url.origin !== panelOrigin) && !localDevelopmentOrigin) {
+        throw new Error('callback origin does not match the panel');
+      }
+      if (url.protocol !== 'https:' && !localDevelopmentOrigin) {
         throw new Error('insecure callback');
       }
     } catch {

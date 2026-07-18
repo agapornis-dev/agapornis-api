@@ -66,7 +66,7 @@ ForgeCDN hosts. Mod and server-pack uploads are limited to 128 MB by the agent.
 
 ## Multiple API replicas
 
-Agapornis can run multiple API instances behind a layer-7 load balancer. Set `API_CLUSTERED=true` (or `API_REPLICAS` above 1), point every replica at the same PostgreSQL/MySQL database and Redis deployment, and enable `TRUST_PROXY=true` when the proxy supplies trusted forwarding headers. Startup intentionally fails if clustered mode uses local JSON storage or has no Redis coordination. SSE and WebSocket clients may reconnect to any healthy replica; no sticky session is required.
+Agapornis can run multiple API instances behind a layer-7 load balancer. Set `API_CLUSTERED=true` (or `API_REPLICAS` above 1), point every replica at the same PostgreSQL database and Redis deployment, and enable `TRUST_PROXY=true` when the proxy supplies trusted forwarding headers. PostgreSQL is required because critical reservations and state transitions use its transactional advisory locks; MySQL remains supported for a single API process. Startup intentionally fails if clustered mode uses JSON/MySQL storage or has no Redis coordination. SSE and WebSocket clients may reconnect to any healthy replica; no sticky session is required.
 
 The first database-backed replica atomically seeds the `primary` row in `cluster_security` from existing `keys/` files and `APP_JWT_SECRET` / `TWO_FACTOR_ENCRYPTION_KEY` when present. Later replicas load that row and replace their local certificate copies with the shared bundle. This preserves existing sessions and agent trust during migration while preventing independently generated replica keys. The row contains private key material, so database access, transport, and backups must be protected accordingly.
 

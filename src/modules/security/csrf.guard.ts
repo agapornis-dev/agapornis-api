@@ -54,15 +54,18 @@ export function hasTrustedRequestOrigin(request: any) {
 }
 
 function requestTargetOrigins(request: any) {
-  const host = firstHeader(request.headers?.['x-forwarded-host'])
+  // Fastify derives hostname/protocol using its trustProxy configuration.
+  // Never consume forwarded headers directly here: without a trusted proxy,
+  // they are attacker-controlled and could manufacture a matching origin.
+  const host = String(request.hostname || '').trim()
     || firstHeader(request.headers?.host);
   if (!host) return [];
 
-  const forwardedProtocol = firstHeader(request.headers?.['x-forwarded-proto'])
-    ?.split(',')[0]
-    .trim();
-  const protocol = forwardedProtocol
-    || String(request.protocol || request.raw?.protocol || 'http').replace(':', '');
+  const protocol = String(
+    request.protocol
+      || request.raw?.protocol
+      || (request.socket?.encrypted ? 'https' : 'http'),
+  ).replace(':', '');
   const origin = normalizeOrigin(`${protocol}://${host}`);
   return origin ? [origin] : [];
 }

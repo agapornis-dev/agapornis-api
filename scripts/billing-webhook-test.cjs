@@ -24,6 +24,7 @@ async function main() {
   let reservation;
   let createRequest;
   let dispatched;
+  let requestedPortCount;
 
   const controller = new BillingProvisioningController(
     { deleteServer: async () => ({ success: true }) },
@@ -31,6 +32,7 @@ async function main() {
       resolveServer: (_eggId, body) => {
         assert.equal(body.hostPort, 30007);
         assert.equal(body.port, undefined);
+        assert.equal(body.dockerImage, undefined, 'billing payload must not override the plan image');
         return {
           server_id: body.serverId,
           host_port: body.hostPort,
@@ -45,20 +47,25 @@ async function main() {
         reservation = { record, start, end };
         return { record: { ...record, assignedHostPort: 30007 }, replay: false };
       },
-      assignPortAllocations: async () => ({
+      assignPortAllocations: async (_serverId, count) => {
+        requestedPortCount = count;
+        return ({
         ...reservation.record,
         assignedHostPort: 30007,
         variables: {
           ...reservation.record.variables,
           AGAPORNIS_PORT_MAPPINGS: JSON.stringify([{ variable: 'SERVER_PORT', internalPort: 25565, hostPort: 30007, protocol: 'tcp' }])
         }
-      }),
+      }); },
       portMappings: variables => JSON.parse(variables.AGAPORNIS_PORT_MAPPINGS),
       finalizeProvisioning: async () => undefined,
       releaseProvisioning: async () => undefined,
     },
     { create: async (_nodeId, request) => { createRequest = request; return { success: true }; } },
-    { get: id => id === 'node-a' ? node : undefined },
+    {
+      get: id => id === 'node-a' ? node : undefined,
+      connectionHost: () => 'node-a.example.test',
+    },
     users,
     { dispatch: async (event, payload) => { dispatched = { event, payload }; } },
     { powerAllForServer: async () => undefined },
@@ -72,6 +79,13 @@ async function main() {
       serviceId: '9001',
       email: 'new-customer@example.com',
       name: 'New Customer',
+      dockerImage: 'attacker.example/untrusted:latest',
+      portCount: 32,
+      variables: {
+        PUBLIC_OPTION: 'allowed',
+        SERVER_MEMORY: '999999',
+        AGAPORNIS_CPU_PINNED_THREADS: '0-99',
+      },
     }, { 'x-whmcs-secret': 'webhook-test-secret' });
 
     const account = users.findByEmail('new-customer@example.com');
@@ -87,6 +101,9 @@ async function main() {
     assert.equal(reservation.record.variables.AGAPORNIS_CPU_PINNED_THREADS, '1,3-4');
     assert.equal(reservation.record.variables.AGAPORNIS_SWAP_MEMORY_MB, '256');
     assert.equal(reservation.record.variables.AGAPORNIS_SWAP_MEMORY_STORAGE, 'server');
+    assert.equal(reservation.record.variables.PUBLIC_OPTION, 'allowed');
+    assert.equal(reservation.record.variables.SERVER_MEMORY, undefined);
+    assert.equal(requestedPortCount, 1, 'billing payload must not override the plan port count');
     assert.equal(dispatched.event, 'billing.server.provisioned');
     assert.equal(dispatched.payload.email, 'new-customer@example.com');
 

@@ -57,7 +57,6 @@ export class ServerBackupsController {
       req.user,
       'backups',
     );
-
     const result = await this.backupOperations.create(server, body?.storage);
     this.activityLog.log({
       event: 'server.backup_created',
@@ -146,6 +145,10 @@ export class ServerBackupsController {
       req.user,
       'backups',
     );
+    backupId = this.validBackupId(backupId);
+    if (expectedChecksum && !/^[a-f0-9]{64}$/i.test(expectedChecksum)) {
+      throw new HttpException('expectedChecksum must be a SHA-256 digest', HttpStatus.BAD_REQUEST);
+    }
 
     const stopped: any = await this.support.forward(
       'stop-before-restore',
@@ -219,6 +222,7 @@ export class ServerBackupsController {
     await this.support.requireNodeServerPermission(id, serverId, req.user, 'backups');
 
     const normalizedStorage = this.storage(storage);
+    backupId = this.validBackupId(backupId);
     const call = this.client.downloadBackup(id, serverId, backupId, normalizedStorage);
 
     const res = reply.raw;
@@ -226,7 +230,7 @@ export class ServerBackupsController {
     let headersStarted = false;
     let paused = false;
 
-    const safeFilename = backupId.replace(/"/g, '');
+    const safeFilename = backupId;
 
     const canWrite = () => !closed && !res.destroyed && !res.writableEnded;
 
@@ -329,6 +333,7 @@ export class ServerBackupsController {
     @Query('storage') storage = 'local',
   ) {
     await this.support.requireNodeServerPermission(id, serverId, req.user, 'backups');
+    backupId = this.validBackupId(backupId);
 
     const response = await this.support.forward(
       'verify-backup',
@@ -337,6 +342,14 @@ export class ServerBackupsController {
       () => this.client.verifyBackup(id, serverId, backupId, this.storage(storage)),
     );
     return { success: Boolean(response.success) };
+  }
+
+  private validBackupId(value: unknown) {
+    const id = String(value || '').trim();
+    if (!/^[A-Za-z0-9._-]{1,160}$/.test(id) || id.includes('..')) {
+      throw new HttpException('backup id is invalid', HttpStatus.BAD_REQUEST);
+    }
+    return id;
   }
 
   private storage(value: string) {
