@@ -32,6 +32,7 @@ const UPDATE_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_UPDATE_TIMEOUT_MS', 900_000
 const BACKUP_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_BACKUP_TIMEOUT_MS', 1_800_000); // 30 min
 const STATS_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_STATS_TIMEOUT_MS', 3_000); // 3 sec
 const STATUS_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_STATUS_TIMEOUT_MS', 10_000); // 10 sec
+const CONSOLE_INVENTORY_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_CONSOLE_INVENTORY_TIMEOUT_MS', 5_000); // 5 sec
 const CROWDSEC_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_CROWDSEC_TIMEOUT_MS', 10_000); // 10 sec
 const CERTIFICATE_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_CERTIFICATE_TIMEOUT_MS', 300_000); // 5 min
 const MAX_FILE_UPLOAD_BYTES = new ApiConfigService().positiveInt('AGAPORNIS_MAX_FILE_UPLOAD_BYTES', 2 * 1024 * 1024 * 1024);
@@ -263,6 +264,18 @@ export class AgentClientService {
     );
     call.once?.('metadata', () => void this.persistObservedCertificate(nodeId));
     return call;
+  }
+
+  syncConsoleServers(nodeId: string, serverIds: string[]) {
+    return this.callServer(
+      nodeId,
+      'SyncConsoleServers',
+      {
+        server_ids: Array.from(new Set(serverIds.map(String).filter(Boolean))).sort()
+      },
+      undefined,
+      CONSOLE_INVENTORY_TIMEOUT_MS
+    );
   }
 
   uploadFile(

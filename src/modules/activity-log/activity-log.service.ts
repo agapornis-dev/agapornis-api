@@ -62,11 +62,36 @@ export class ActivityLogService implements OnModuleInit {
     }
   }
 
-  // Server activity is shared with collaborators, so infrastructure and actor
-  // identifiers plus free-form metadata stay in the administrator audit log.
+  // Server activity is shared with collaborators, so infrastructure, actor
+  // identifiers, and free-form metadata stay in the administrator audit log.
+  // Curated system-event details are safe to expose explicitly.
   private sanitizeServerEntry(entry: ActivityLogEntry): ActivityLogEntry {
     const { userId, userEmail, serverId, nodeId, meta, ip, ...safeEntry } = entry;
-    return safeEntry;
+    const visibleMeta = entry.event === 'server.schedule_removed_after_failures'
+      ? this.scheduleRemovalMeta(meta)
+      : undefined;
+    return visibleMeta ? { ...safeEntry, meta: visibleMeta } : safeEntry;
+  }
+
+  private scheduleRemovalMeta(meta: Record<string, any> | undefined) {
+    if (!meta || typeof meta !== 'object') return undefined;
+    const failureCount = Number(meta.failureCount);
+    if (
+      typeof meta.scheduleId !== 'string'
+      || typeof meta.scheduleName !== 'string'
+      || typeof meta.reason !== 'string'
+      || !Number.isSafeInteger(failureCount)
+    ) return undefined;
+    return {
+      scheduleId: meta.scheduleId,
+      scheduleName: meta.scheduleName,
+      action: typeof meta.action === 'string' ? meta.action : undefined,
+      failureCount,
+      // Raw provider, filesystem, and gRPC errors remain available in the
+      // administrator audit entry but must not leak through collaborator-safe
+      // server activity.
+      reason: 'The scheduled action could not be completed.',
+    };
   }
 
   async forServer(serverId: string, limit = 100): Promise<ActivityLogEntry[]> {

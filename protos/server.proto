@@ -23,6 +23,7 @@ service ServerManagement {
   rpc SendCommand (SendCommandRequest) returns (ServerActionResponse);
   rpc TestDatabaseConnection (DatabaseConnectionTestRequest) returns (DatabaseConnectionTestResponse);
   rpc StreamConsole (ServerActionRequest) returns (stream ConsoleMessage);
+  rpc SyncConsoleServers (ConsoleServerInventoryRequest) returns (ConsoleServerInventoryResponse);
   rpc GetUpdateStatus (UpdateStatusRequest) returns (UpdateStatusResponse);
   rpc ApplyUpdate (ApplyUpdateRequest) returns (ApplyUpdateResponse);
   rpc RestartForUpdate (RestartForUpdateRequest) returns (RestartForUpdateResponse);
@@ -150,6 +151,8 @@ message NodeStatsResponse {
   string error_message = 7;
   int64 uptime_seconds = 8;
   int32 cpu_count = 9;
+  string agent_instance_id = 10;
+  bool console_inventory_initialized = 11;
 }
 
 message CrowdSecAlertsRequest {}
@@ -183,7 +186,15 @@ message CrowdSecAlertsResponse {
 message SendCommandRequest { string server_id = 1; string command = 2; }
 message DatabaseConnectionTestRequest { string server_id = 1; string database_type = 2; string host = 3; int32 port = 4; string database_name = 5; string username = 6; string password = 7; string docker_image = 8; }
 message DatabaseConnectionTestResponse { bool success = 1; string error_message = 2; int64 latency_ms = 3; }
-message ConsoleMessage { string log_line = 1; optional bool replayed = 2; }
+message ConsoleMessage { string log_line = 1; optional bool replayed = 2; optional bool history_complete = 3; }
+message ConsoleServerInventoryRequest { repeated string server_ids = 1; }
+message ConsoleServerInventoryResponse {
+  bool success = 1;
+  int32 active_reader_count = 2;
+  int32 accepted_count = 3;
+  int32 removed_count = 4;
+  string error_message = 5;
+}
 message UpdateStatusRequest {}
 message UpdateStatusResponse {
   string version = 1;

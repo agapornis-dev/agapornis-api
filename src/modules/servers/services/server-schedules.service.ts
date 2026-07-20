@@ -25,6 +25,7 @@ export interface ServerSchedule {
   targetPath?: string;
   storage?: BackupStorage;
   actorUserId?: string;
+  consecutiveFailures?: number;
   lastRunAt?: string;
   nextRunAt?: string;
   createdAt: string;
@@ -37,6 +38,7 @@ const MAX_INTERVAL_SECONDS = 2_147_000;
 const MAX_TIMER_MS = 2_147_000_000;
 const MAX_SCHEDULES_PER_SERVER = 50;
 const MAX_CLEAR_ITEMS = 1000;
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 @Injectable()
 export class ServerSchedulesService implements OnModuleInit {
@@ -81,6 +83,11 @@ export class ServerSchedulesService implements OnModuleInit {
         const server = await this.registry.get(schedule.serverId);
         schedule.actorUserId = server?.ownerUserId;
         if (!schedule.actorUserId) schedule.enabled = false;
+        migrated = true;
+      }
+      const consecutiveFailures = this.failureCount(schedule.consecutiveFailures);
+      if (schedule.consecutiveFailures !== consecutiveFailures) {
+        schedule.consecutiveFailures = consecutiveFailures;
         migrated = true;
       }
       this.schedule(schedule);
@@ -133,6 +140,7 @@ export class ServerSchedulesService implements OnModuleInit {
       action,
       ...this.actionConfiguration(action, body),
       actorUserId: this.actorId(actor),
+      consecutiveFailures: 0,
       nextRunAt: new Date(now.getTime() + intervalSeconds * 1000).toISOString(),
       createdAt: now.toISOString(),
     };
@@ -166,6 +174,7 @@ export class ServerSchedulesService implements OnModuleInit {
       storage: undefined,
       ...this.actionConfiguration(action, configurationInput),
       actorUserId: this.actorId(actor),
+      consecutiveFailures: 0,
       nextRunAt: intervalChanged
         ? new Date(Date.now() + intervalSeconds * 1000).toISOString()
         : existing.nextRunAt,
@@ -206,22 +215,58 @@ export class ServerSchedulesService implements OnModuleInit {
   }
 
   private async runScheduled(scheduled: ServerSchedule) {
+    let failed = false;
+    let failure: any;
     try {
       await this.executeExclusive(scheduled);
     } catch (error: any) {
-      this.logger.error(`Schedule "${scheduled.name}" (${scheduled.id}) failed: ${error?.message || error}`);
-    } finally {
-      const current = this.schedules.get(scheduled.id);
-      if (!current || current !== scheduled) return;
-      const next: ServerSchedule = {
-        ...current,
-        lastRunAt: new Date().toISOString(),
-        nextRunAt: new Date(Date.now() + current.intervalSeconds * 1000).toISOString(),
-      };
+      failed = true;
+      failure = error;
+    }
+
+    const current = this.schedules.get(scheduled.id);
+    if (!current || current !== scheduled) return;
+
+    if (failed) {
+      const consecutiveFailures = this.failureCount(current.consecutiveFailures) + 1;
+      const reason = this.failureReason(failure);
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        this.clearTimer(current.id);
+        this.schedules.delete(current.id);
+        this.save();
+
+        this.logger.error(
+          `Schedule "${current.name}" (${current.id}) was automatically removed after ${consecutiveFailures} consecutive failures. Last error: ${reason}`,
+        );
+        this.activityLog.log({
+          event: 'server.schedule_removed_after_failures',
+          serverId: current.serverId,
+          nodeId: current.nodeId,
+          meta: {
+            scheduleId: current.id,
+            scheduleName: current.name,
+            action: current.action,
+            failureCount: consecutiveFailures,
+            reason,
+          },
+        });
+        return;
+      }
+
+      this.logger.error(
+        `Schedule "${current.name}" (${current.id}) failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES} consecutive failures): ${reason}`,
+      );
+      const next = this.nextRun(current, consecutiveFailures);
       this.schedules.set(current.id, next);
       this.save();
       this.schedule(next);
+      return;
     }
+
+    const next = this.nextRun(current, 0);
+    this.schedules.set(current.id, next);
+    this.save();
+    this.schedule(next);
   }
 
   private executeExclusive(schedule: ServerSchedule) {
@@ -354,6 +399,26 @@ export class ServerSchedulesService implements OnModuleInit {
     const id = String(actor?.id || '').trim();
     if (!id) throw new Error('schedule owner is required');
     return id;
+  }
+
+  private nextRun(schedule: ServerSchedule, consecutiveFailures: number): ServerSchedule {
+    return {
+      ...schedule,
+      consecutiveFailures,
+      lastRunAt: new Date().toISOString(),
+      nextRunAt: new Date(Date.now() + schedule.intervalSeconds * 1000).toISOString(),
+    };
+  }
+
+  private failureCount(value: unknown) {
+    const count = Number(value);
+    if (!Number.isSafeInteger(count) || count < 0) return 0;
+    return Math.min(count, MAX_CONSECUTIVE_FAILURES - 1);
+  }
+
+  private failureReason(error: any) {
+    const reason = String(error?.message || error || 'unknown error');
+    return reason.length > 2048 ? `${reason.slice(0, 2048)} [truncated]` : reason;
   }
 
   private clearTimer(id: string) {

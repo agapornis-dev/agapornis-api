@@ -120,6 +120,29 @@ export class ServerRegistryService implements OnModuleInit {
     }));
   }
 
+  async consoleServerIdsByNode(): Promise<Map<string, string[]>> {
+    const excludedStatuses = new Set(['provisioning', 'deleting', 'transferring']);
+    const rows = this.database.enabled
+      ? await this.database.query("SELECT id, node_id, status FROM servers WHERE status NOT IN ('provisioning', 'deleting', 'transferring') ORDER BY node_id ASC, id ASC")
+      : Array.from(this.servers.values()).map(server => ({
+          id: server.id,
+          node_id: server.nodeId,
+          status: server.status
+        }));
+    const result = new Map<string, string[]>();
+
+    for (const row of rows) {
+      const nodeId = String(row.node_id || '').trim();
+      const serverId = String(row.id || '').trim();
+      const status = normalizeServerStatus(row.status);
+      if (!nodeId || !serverId || excludedStatuses.has(status)) continue;
+      result.set(nodeId, [...(result.get(nodeId) || []), serverId]);
+    }
+
+    for (const serverIds of result.values()) serverIds.sort();
+    return result;
+  }
+
   async get(id: string) {
     if (this.database.enabled) {
       const rows = await this.database.query(

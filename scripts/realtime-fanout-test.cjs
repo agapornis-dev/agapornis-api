@@ -9,6 +9,7 @@ process.env.SERVER_CONSOLE_BATCH_DELAY_MS = '5';
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { ServerRealtimeService } = require('../src/modules/servers/realtime/server-realtime.service');
+const { ServerRuntimeController } = require('../src/modules/servers/controllers/server-runtime.controller');
 
 const config = {
   positiveInt(name, fallback) {
@@ -148,7 +149,14 @@ async function main() {
   assert.equal(consoleStarts, 0, 'rapid transient console selections opened gRPC streams');
 
   const firstConsoleEvents = [];
-  const unsubscribeConsole = churnRealtime.subscribeConsole('node-a', 'stable-console', event => firstConsoleEvents.push(event));
+  let firstHistoryEntries = -1;
+  const unsubscribeConsole = churnRealtime.subscribeConsole(
+    'node-a',
+    'stable-console',
+    event => firstConsoleEvents.push(event),
+    entries => { firstHistoryEntries = entries; }
+  );
+  assert.equal(firstHistoryEntries, 0, 'a cold console feed reported cached history');
   await waitFor(() => consoleStarts === 1, 'a stable console selection did not start after the churn window');
   for (let index = 0; index < 200; index += 1) {
     activeConsoleCall.emit('data', { log_line: `line-${index}`, replayed: false, _replayed: 'replayed' });
@@ -158,8 +166,15 @@ async function main() {
   assert.ok(firstConsoleEvents.every(event => event.payload.replayed === false), 'live console lines were marked as history');
 
   const replayedConsoleEvents = [];
-  const unsubscribeReplay = churnRealtime.subscribeConsole('node-a', 'stable-console', event => replayedConsoleEvents.push(event));
+  let replayedHistoryEntries = 0;
+  const unsubscribeReplay = churnRealtime.subscribeConsole(
+    'node-a',
+    'stable-console',
+    event => replayedConsoleEvents.push(event),
+    entries => { replayedHistoryEntries = entries; }
+  );
   assert.equal(consoleStarts, 1, 'a second viewer opened a duplicate console stream');
+  assert.ok(replayedHistoryEntries > 0, 'a warm console feed did not report its replay boundary');
   assert.equal(replayedConsoleEvents.flatMap(event => event.payload.line.split('\n')).length, 200, 'console replay dropped history');
   assert.ok(replayedConsoleEvents.length <= 2, 'cached console history was replayed as too many SSE events');
   assert.ok(replayedConsoleEvents.every(event => event.payload.replayed === true), 'cached console history was marked as live output');
@@ -172,10 +187,197 @@ async function main() {
   await waitFor(() => consoleStarts === 2, 'an input stream error did not reconnect the shared console feed');
   unsubscribeReplay();
   unsubscribeConsole();
-  assert.equal(consoleCancels, 1, 'the stable console stream was not cancelled on disconnect');
+
+  assert.equal(consoleCancels, 1, 'the idle API console stream was not cancelled immediately');
+  assert.equal(churnRealtime.consoleFeeds.size, 0, 'the idle API console feed retained its history');
+  const resumedConsoleEvents = [];
+  let resumedHistoryEntries = -1;
+  const unsubscribeResumedConsole = churnRealtime.subscribeConsole(
+    'node-a',
+    'stable-console',
+    event => resumedConsoleEvents.push(event),
+    entries => { resumedHistoryEntries = entries; }
+  );
+  assert.equal(resumedHistoryEntries, 0, 'a new API feed retained history after its last viewer left');
+  assert.equal(resumedConsoleEvents.length, 0, 'a new API feed replayed stale API-side history');
+  await waitFor(() => consoleStarts === 3, 'a returning console viewer did not open a fresh agent stream');
+  activeConsoleCall.emit('data', {
+    log_line: 'agent-retained-history',
+    replayed: true,
+    _replayed: 'replayed'
+  });
+  activeConsoleCall.emit('data', {
+    history_complete: true,
+    _history_complete: 'history_complete'
+  });
+  await waitFor(
+    () => resumedConsoleEvents.some(event => event.event === 'console-history-ready'),
+    'a returning console viewer did not receive the agent-side history boundary'
+  );
+  assert.equal(
+    resumedConsoleEvents.find(event => event.event === 'console').payload.line,
+    'agent-retained-history',
+    'a returning console viewer did not receive history from the warm agent reader'
+  );
+  unsubscribeResumedConsole();
+  assert.equal(churnRealtime.consoleFeeds.size, 0, 'console feed was not cleaned up immediately');
+  assert.equal(consoleCancels, 2, 'the fresh idle console stream was not cancelled immediately');
   churnRealtime.onModuleDestroy();
 
-  console.log('Realtime fan-out self-test passed: listeners share work, transient selections stay local, idle feeds stop, cached feeds resume, and abandoned RPCs cancel.');
+  const markerCalls = new Map();
+  const markerRealtime = new ServerRealtimeService({
+    streamConsole: (_nodeId, serverId) => {
+      const call = new EventEmitter();
+      call.cancel = () => undefined;
+      markerCalls.set(serverId, call);
+      return call;
+    }
+  }, registry, support, config);
+
+  const markerEvents = [];
+  markerRealtime.subscribeConsole(
+    'node-a',
+    'server-marker',
+    event => markerEvents.push(event)
+  );
+  await waitFor(() => markerCalls.has('server-marker'), 'marker console stream did not start');
+  const markerCall = markerCalls.get('server-marker');
+  markerCall.emit('data', { log_line: 'replay-a', replayed: true, _replayed: 'replayed' });
+  markerCall.emit('data', { log_line: 'replay-b', replayed: true, _replayed: 'replayed' });
+  markerCall.emit('data', {
+    history_complete: true,
+    _history_complete: 'history_complete'
+  });
+  await waitFor(
+    () => markerEvents.some(event => event.event === 'console-history-ready'),
+    'agent history marker was not forwarded'
+  );
+  const markerConsoleIndex = markerEvents.findIndex(event => event.event === 'console');
+  const markerBoundaryIndex = markerEvents.findIndex(event => event.event === 'console-history-ready');
+  assert.ok(markerConsoleIndex >= 0, 'pending agent replay was not flushed by its history marker');
+  assert.ok(markerConsoleIndex < markerBoundaryIndex, 'agent history boundary preceded its pending replay');
+  assert.equal(markerEvents[markerConsoleIndex].payload.line, 'replay-a\nreplay-b');
+  assert.deepEqual(
+    markerEvents[markerBoundaryIndex].payload,
+    {
+      nodeId: 'node-a',
+      serverId: 'server-marker',
+      historyReady: true,
+      historyEntries: 1,
+      agentHistoryComplete: true
+    },
+    'agent history boundary did not include its explicit completion metadata'
+  );
+
+  const emptyMarkerEvents = [];
+  markerRealtime.subscribeConsole(
+    'node-a',
+    'server-empty-marker',
+    event => emptyMarkerEvents.push(event)
+  );
+  await waitFor(() => markerCalls.has('server-empty-marker'), 'empty marker console stream did not start');
+  markerCalls.get('server-empty-marker').emit('data', {
+    history_complete: true,
+    _history_complete: 'history_complete'
+  });
+  await waitFor(
+    () => emptyMarkerEvents.some(event => event.event === 'console-history-ready'),
+    'zero-entry agent history marker was not forwarded'
+  );
+  assert.equal(
+    emptyMarkerEvents.some(event => event.event === 'console'),
+    false,
+    'zero-entry history marker created a blank console line'
+  );
+  assert.equal(
+    emptyMarkerEvents.find(event => event.event === 'console-history-ready').payload.historyEntries,
+    0,
+    'zero-entry agent history marker reported cached entries'
+  );
+  const lateEmptyMarkerEvents = [];
+  markerRealtime.subscribeConsole(
+    'node-a',
+    'server-empty-marker',
+    event => lateEmptyMarkerEvents.push(event)
+  );
+  assert.equal(
+    lateEmptyMarkerEvents.some(event =>
+      event.event === 'console-history-ready' && event.payload.agentHistoryComplete === true
+    ),
+    true,
+    'a late viewer missed the already-completed zero-entry agent replay'
+  );
+
+  const legacyMarkerEvents = [];
+  markerRealtime.subscribeConsole(
+    'node-a',
+    'server-legacy-marker',
+    event => legacyMarkerEvents.push(event)
+  );
+  await waitFor(() => markerCalls.has('server-legacy-marker'), 'legacy console stream did not start');
+  markerCalls.get('server-legacy-marker').emit('data', { log_line: 'legacy-replay' });
+  await waitFor(
+    () => legacyMarkerEvents.some(event => event.event === 'console'),
+    'legacy console output was not forwarded'
+  );
+  assert.equal(
+    legacyMarkerEvents.some(event => event.event === 'console-history-ready'),
+    false,
+    'legacy console output invented an exact agent history boundary'
+  );
+  markerRealtime.onModuleDestroy();
+
+  const response = new EventEmitter();
+  const writtenFrames = [];
+  let applyBackpressure = true;
+  let controllerUnsubscribed = 0;
+  response.destroyed = false;
+  response.writableEnded = false;
+  response.writeHead = () => undefined;
+  response.flushHeaders = () => undefined;
+  response.flush = () => undefined;
+  response.end = () => { response.writableEnded = true; };
+  response.destroy = () => { response.destroyed = true; };
+  response.write = frame => {
+    writtenFrames.push(frame);
+    if (applyBackpressure && String(frame).includes('event: agent-action')) {
+      applyBackpressure = false;
+      return false;
+    }
+    return true;
+  };
+  const controller = new ServerRuntimeController(
+    {},
+    {},
+    { requireNodeServerPermission: async () => undefined },
+    {
+      subscribeConsole: (_nodeId, _serverId, listener, replayComplete) => {
+        listener({ event: 'console', payload: { line: 'history-a', replayed: true } });
+        listener({ event: 'console', payload: { line: 'history-b', replayed: true } });
+        replayComplete(2);
+        return () => { controllerUnsubscribed += 1; };
+      }
+    }
+  );
+  await controller.streamConsole('node-a', 'server-backpressure', { user: {} }, { raw: response });
+  assert.equal(
+    writtenFrames.some(frame => String(frame).includes('console-history-ready')),
+    false,
+    'history boundary bypassed HTTP backpressure'
+  );
+  response.emit('drain');
+  const replayOutput = writtenFrames.join('');
+  assert.ok(replayOutput.includes('history-a'), 'first queued history frame was dropped');
+  assert.ok(replayOutput.includes('history-b'), 'second queued history frame was dropped');
+  assert.ok(
+    replayOutput.indexOf('history-b') < replayOutput.indexOf('console-history-ready'),
+    'history-ready was delivered before queued history'
+  );
+  response.destroyed = true;
+  response.emit('close');
+  assert.equal(controllerUnsubscribed, 1, 'closing the SSE response did not unsubscribe its console listener');
+
+  console.log('Realtime fan-out self-test passed: listeners share work, transient selections stay local, idle feeds stop immediately, agent history resumes, and abandoned RPCs cancel.');
 }
 
 async function waitFor(predicate, message) {

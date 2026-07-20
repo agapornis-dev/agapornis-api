@@ -170,6 +170,7 @@ export class DatabaseMigrations {
     await this.ensureColumn('server_schedules', 'target_path', 'TEXT');
     await this.ensureColumn('server_schedules', 'storage', 'VARCHAR(16)');
     await this.ensureColumn('server_schedules', 'actor_user_id', 'VARCHAR(64)');
+    await this.ensureColumn('server_schedules', 'consecutive_failures', 'INTEGER NOT NULL DEFAULT 0');
 
     await this.ensureAgentCertificateColumns(timestamp);
     await this.ensureAgentPlacementColumns();

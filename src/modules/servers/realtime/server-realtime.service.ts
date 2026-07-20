@@ -42,6 +42,7 @@ interface ConsoleFeed {
   pendingReplayed?: boolean;
   pendingCharacters: number;
   historyCharacters: number;
+  agentHistoryComplete: boolean;
   stopped: boolean;
 }
 
@@ -138,7 +139,12 @@ export class ServerRealtimeService implements OnModuleDestroy {
     };
   }
 
-  subscribeConsole(nodeId: string, serverId: string, listener: RealtimeListener) {
+  subscribeConsole(
+    nodeId: string,
+    serverId: string,
+    listener: RealtimeListener,
+    replayComplete?: (historyEntries: number) => void,
+  ) {
     this.counters.browserConsoleSubscriptions += 1;
     const key = this.key(nodeId, serverId);
     let feed = this.consoleFeeds.get(key);
@@ -152,19 +158,24 @@ export class ServerRealtimeService implements OnModuleDestroy {
         pendingLines: [],
         pendingCharacters: 0,
         historyCharacters: 0,
+        agentHistoryComplete: false,
         stopped: false
       };
       this.consoleFeeds.set(key, feed);
     }
 
     feed.listeners.add(listener);
-    this.replayConsoleHistory(feed, listener);
+    const historyEntries = this.replayConsoleHistory(feed, listener);
+    replayComplete?.(historyEntries);
+    if (feed.agentHistoryComplete) listener(this.agentHistoryCompleteEvent(feed));
     if (!feed.call && !feed.startTimer) this.scheduleConsoleStart(key, feed);
 
     return () => {
       feed!.listeners.delete(listener);
       if (feed!.listeners.size === 0) {
-        if (!feed!.call && feed!.startTimer) this.counters.transientConsoleSelections += 1;
+        if (!feed!.call && feed!.startTimer) {
+          this.counters.transientConsoleSelections += 1;
+        }
         this.stopConsoleFeed(key, feed!);
       }
     };
@@ -256,6 +267,7 @@ export class ServerRealtimeService implements OnModuleDestroy {
   private startConsoleFeed(key: string, feed: ConsoleFeed) {
     if (!this.isCurrentConsoleFeed(key, feed) || feed.listeners.size === 0) return;
     feed.startTimer = undefined;
+    feed.agentHistoryComplete = false;
     this.counters.consoleStreamsStarted += 1;
     if (feed.retryTimer) clearTimeout(feed.retryTimer);
     feed.retryTimer = undefined;
@@ -280,13 +292,26 @@ export class ServerRealtimeService implements OnModuleDestroy {
     call.on('data', (message: any) => {
       if (!this.isCurrentConsoleFeed(key, feed) || feed.call !== call) return;
       const line = message.log_line || message.logLine || '';
-      if (!line) return;
-      this.counters.consoleMessagesReceived += 1;
-      // Proto3 optional presence distinguishes upgraded agents from legacy
-      // agents. Legacy output is treated as replay to avoid false live-only
-      // alerts while nodes are rolling forward.
-      const replayed = message._replayed === 'replayed' ? Boolean(message.replayed) : true;
-      this.queueConsoleLine(feed, line, replayed);
+      if (line) {
+        this.counters.consoleMessagesReceived += 1;
+        // Proto3 optional presence distinguishes upgraded agents from legacy
+        // agents. Legacy output is treated as replay to avoid false live-only
+        // alerts while nodes are rolling forward.
+        const replayed = message._replayed === 'replayed' ? Boolean(message.replayed) : true;
+        this.queueConsoleLine(feed, line, replayed);
+      }
+
+      // Upgraded agents send an explicit empty marker after their bounded
+      // replay. Flush the pending batch first so SSE ordering gives browsers a
+      // precise boundary, including when the agent had zero history entries.
+      const historyComplete = message._history_complete === 'history_complete'
+        ? Boolean(message.history_complete)
+        : false;
+      if (historyComplete) {
+        this.flushConsole(feed);
+        feed.agentHistoryComplete = true;
+        this.broadcast(feed.listeners, this.agentHistoryCompleteEvent(feed));
+      }
     });
 
     call.on('error', (error: any) => {
@@ -301,6 +326,7 @@ export class ServerRealtimeService implements OnModuleDestroy {
         }
       });
       feed.call = undefined;
+      feed.agentHistoryComplete = false;
       this.scheduleConsoleReconnect(key, feed);
     });
 
@@ -312,6 +338,7 @@ export class ServerRealtimeService implements OnModuleDestroy {
         payload: { action: 'console-reconnecting', nodeId: feed.nodeId, serverId: feed.serverId }
       });
       feed.call = undefined;
+      feed.agentHistoryComplete = false;
       this.scheduleConsoleReconnect(key, feed);
     });
   }
@@ -437,6 +464,20 @@ export class ServerRealtimeService implements OnModuleDestroy {
       characters += entry.length + 1;
     }
     flush();
+    return feed.history.length;
+  }
+
+  private agentHistoryCompleteEvent(feed: ConsoleFeed): RealtimeEvent {
+    return {
+      event: 'console-history-ready',
+      payload: {
+        nodeId: feed.nodeId,
+        serverId: feed.serverId,
+        historyReady: true,
+        historyEntries: feed.history.length,
+        agentHistoryComplete: true
+      }
+    };
   }
 
   diagnostics() {

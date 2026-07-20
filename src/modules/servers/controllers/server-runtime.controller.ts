@@ -21,6 +21,8 @@ import { ServerRouteSupportService } from '../services/server-route-support.serv
 import { ServerRealtimeService } from '../realtime/server-realtime.service';
 import { SendServerCommandDto } from '../dto/server-runtime.dto';
 
+const MAX_CONSOLE_SSE_QUEUE_BYTES = 4 * 1024 * 1024;
+
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('agents/:id/servers')
 export class ServerRuntimeController {
@@ -160,6 +162,9 @@ export class ServerRuntimeController {
 
     let closed = false;
     let backpressured = false;
+    let unsubscribe: (() => void) | undefined;
+    const queuedFrames: Array<{ frame: string; bytes: number }> = [];
+    let queuedBytes = 0;
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -172,40 +177,68 @@ export class ServerRuntimeController {
 
     // Push enough data to cross buffering thresholds in intermediary proxies
     // immediately. The frame is an SSE comment, so browsers ignore it.
-    res.write(`: ${' '.repeat(2048)}\n\n`);
+    backpressured = !res.write(`: ${' '.repeat(2048)}\n\n`);
     (res as any).flush?.();
 
     const canWrite = () => !closed && !res.destroyed && !res.writableEnded;
     const heartbeat = setInterval(() => {
-      if (canWrite() && !backpressured) {
+      if (canWrite() && !backpressured && queuedFrames.length === 0) {
         backpressured = !res.write(': keepalive\n\n');
       }
     }, 15_000);
     heartbeat.unref?.();
 
-    const writeEvent = (event: string, payload: any) => {
-      if (!canWrite() || backpressured) return;
+    const closeResponse = (destroy = false) => {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
+      queuedFrames.length = 0;
+      queuedBytes = 0;
+      unsubscribe?.();
+      unsubscribe = undefined;
 
-      backpressured = !res.write(
-        `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`,
-      );
+      if (!res.destroyed && !res.writableEnded) {
+        if (destroy) res.destroy();
+        else res.end();
+      }
+    };
+
+    const flushQueuedFrames = () => {
+      if (!canWrite()) return;
+      backpressured = false;
+      while (queuedFrames.length > 0) {
+        const next = queuedFrames.shift()!;
+        queuedBytes -= next.bytes;
+        backpressured = !res.write(next.frame);
+        if (backpressured) break;
+      }
       (res as any).flush?.();
     };
 
-    res.on('drain', () => {
-      backpressured = false;
-    });
+    const writeEvent = (event: string, payload: any) => {
+      if (!canWrite()) return;
+      const frame = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
 
-    const endResponse = () => {
-      if (closed) return;
-
-      closed = true;
-      clearInterval(heartbeat);
-
-      if (!res.destroyed && !res.writableEnded) {
-        res.end();
+      if (backpressured || queuedFrames.length > 0) {
+        const bytes = Buffer.byteLength(frame);
+        if (queuedBytes + bytes > MAX_CONSOLE_SSE_QUEUE_BYTES) {
+          // A stalled browser can reconnect and recover from the bounded warm
+          // history. Closing here prevents one client from growing memory
+          // without limit while preserving ordering for healthy clients.
+          closeResponse(true);
+          return;
+        }
+        queuedFrames.push({ frame, bytes });
+        queuedBytes += bytes;
+        return;
       }
+
+      backpressured = !res.write(frame);
+      (res as any).flush?.();
     };
+
+    res.on('drain', flushQueuedFrames);
+    res.on('close', () => closeResponse());
 
     writeEvent('agent-action', {
       action: 'console-attached',
@@ -213,20 +246,26 @@ export class ServerRuntimeController {
       serverId,
     });
 
-    const unsubscribe = this.realtime.subscribeConsole(id, serverId, message => {
-      writeEvent(message.event, message.payload);
+    unsubscribe = this.realtime.subscribeConsole(
+      id,
+      serverId,
+      message => {
+        writeEvent(message.event, message.payload);
 
-      if (message.terminal) {
-        endResponse();
-      }
-    });
-
-    res.on('close', () => {
-      if (closed) return;
-
-      closed = true;
-      clearInterval(heartbeat);
+        if (message.terminal) {
+          closeResponse();
+        }
+      },
+      historyEntries => writeEvent('console-history-ready', {
+        nodeId: id,
+        serverId,
+        historyReady: true,
+        historyEntries,
+      }),
+    );
+    if (closed) {
       unsubscribe();
-    });
+      unsubscribe = undefined;
+    }
   }
 }

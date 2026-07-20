@@ -16,6 +16,7 @@ export const SERVER_SCHEDULES_TABLE: CollectionTable = {
     { name: 'target_path', type: 'TEXT' },
     { name: 'storage', type: 'VARCHAR(16)' },
     { name: 'actor_user_id', type: 'VARCHAR(64)' },
+    { name: 'consecutive_failures', type: 'INTEGER NOT NULL DEFAULT 0' },
     { name: 'last_run_at', type: '${date}' },
     { name: 'next_run_at', type: '${date}' },
     { name: 'created_at', type: '${date} NOT NULL' },
@@ -24,6 +25,7 @@ export const SERVER_SCHEDULES_TABLE: CollectionTable = {
     v.serverId, v.nodeId, v.name, v.enabled,
     v.intervalSeconds, v.action, v.command || null,
     v.targetPath || null, v.storage || null, v.actorUserId || null,
+    Number.isSafeInteger(v.consecutiveFailures) ? v.consecutiveFailures : 0,
     v.lastRunAt || null, v.nextRunAt || null, v.createdAt,
   ],
   fromRow: (r: any) => ({
@@ -38,6 +40,7 @@ export const SERVER_SCHEDULES_TABLE: CollectionTable = {
     targetPath: r.target_path || undefined,
     storage: r.storage || undefined,
     actorUserId: r.actor_user_id || undefined,
+    consecutiveFailures: Number(r.consecutive_failures || 0),
     lastRunAt: r.last_run_at ? ts(r.last_run_at) : undefined,
     nextRunAt: r.next_run_at ? ts(r.next_run_at) : undefined,
     createdAt: ts(r.created_at),

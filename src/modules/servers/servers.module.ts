@@ -41,6 +41,7 @@ import { RuntimeArtifactService } from './services/runtime-artifact.service';
 import { ServerModsController } from './controllers/server-mods.controller';
 import { MinecraftModsService } from './services/minecraft-mods.service';
 import { RedisModule } from '../redis/redis.module';
+import { ConsoleServerInventoryService } from './services/console-server-inventory.service';
 
 @Module({
   imports: [AgentsModule, AuthModule, UsersModule, EggsModule, DatabaseModule, WebhooksModule, ActivityLogModule, PanelSettingsModule, RedisModule],
@@ -79,6 +80,7 @@ import { RedisModule } from '../redis/redis.module';
     BackupVerificationService,
     BackupCatalogService,
     ServerBackupOperationsService,
+    ConsoleServerInventoryService,
     AdminUsersService
   ],
   exports: [ServerRegistryService, ServerRealtimeService, ServerDatabasesService]
