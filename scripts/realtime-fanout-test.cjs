@@ -27,7 +27,17 @@ async function main() {
   const client = {
     getServerStats: async () => ({ status: 'running', cpu_percentage: ++sample })
   };
-  const registry = { get: async () => ({ diskLimitBytes: 1024 }) };
+  const serverRemovedListeners = new Set();
+  const registry = {
+    get: async () => ({ diskLimitBytes: 1024 }),
+    subscribeServerRemoved: listener => {
+      serverRemovedListeners.add(listener);
+      return () => serverRemovedListeners.delete(listener);
+    }
+  };
+  const notifyServerRemoved = serverId => {
+    for (const listener of [...serverRemovedListeners]) listener({ serverId });
+  };
   const support = { recordObservedStatus: async () => undefined };
   const realtime = new ServerRealtimeService(client, registry, support, config);
   const first = [];
@@ -327,6 +337,43 @@ async function main() {
   );
   markerRealtime.onModuleDestroy();
 
+  let lifecycleConsoleStarts = 0;
+  let lifecycleConsoleCancels = 0;
+  const lifecycleRealtime = new ServerRealtimeService({
+    streamConsole: () => {
+      lifecycleConsoleStarts += 1;
+      const call = new EventEmitter();
+      call.cancel = () => { lifecycleConsoleCancels += 1; };
+      return call;
+    }
+  }, registry, support, config);
+  const lifecycleEvents = [];
+  lifecycleRealtime.subscribeConsole(
+    'node-old',
+    'server-recreated',
+    event => lifecycleEvents.push(event)
+  );
+  await waitFor(() => lifecycleConsoleStarts === 1, 'removed-server console stream did not start');
+  notifyServerRemoved('server-recreated');
+  const terminalEvent = lifecycleEvents.find(event => event.event === 'console-terminal');
+  assert.ok(terminalEvent, 'server removal did not emit a terminal console event');
+  assert.equal(terminalEvent.terminal, true, 'server removal console event was not terminal');
+  assert.equal(terminalEvent.payload.reason, 'server-removed');
+  assert.equal(lifecycleConsoleCancels, 1, 'server removal did not cancel the active agent console RPC');
+  assert.equal(lifecycleRealtime.consoleFeeds.size, 0, 'server removal retained the stale API console feed');
+
+  const replacementEvents = [];
+  const unsubscribeReplacement = lifecycleRealtime.subscribeConsole(
+    'node-new',
+    'server-recreated',
+    event => replacementEvents.push(event)
+  );
+  await waitFor(() => lifecycleConsoleStarts === 2, 'same-id replacement did not open a fresh console feed');
+  assert.equal(replacementEvents.length, 0, 'same-id replacement inherited events from the deleted server');
+  unsubscribeReplacement();
+  assert.equal(lifecycleConsoleCancels, 2, 'same-id replacement console RPC was not independently cancelled');
+  lifecycleRealtime.onModuleDestroy();
+
   const response = new EventEmitter();
   const writtenFrames = [];
   let applyBackpressure = true;
@@ -377,7 +424,74 @@ async function main() {
   response.emit('close');
   assert.equal(controllerUnsubscribed, 1, 'closing the SSE response did not unsubscribe its console listener');
 
+  let permissionChecks = 0;
+  let terminalControllerUnsubscribed = 0;
+  const controllerListeners = [];
+  const terminalController = new ServerRuntimeController(
+    {},
+    {},
+    {
+      requireNodeServerPermission: async () => { permissionChecks += 1; }
+    },
+    {
+      subscribeConsole: (_nodeId, _serverId, listener) => {
+        controllerListeners.push(listener);
+        return () => { terminalControllerUnsubscribed += 1; };
+      }
+    }
+  );
+  const removedResponse = createSseResponse();
+  await terminalController.streamConsole(
+    'node-old',
+    'server-recreated',
+    { user: { id: 'old-viewer' } },
+    { raw: removedResponse.response }
+  );
+  controllerListeners[0]({
+    event: 'console-terminal',
+    payload: {
+      nodeId: 'node-old',
+      serverId: 'server-recreated',
+      reason: 'server-removed',
+      message: 'Server was removed. This console connection has been closed.'
+    },
+    terminal: true
+  });
+  assert.equal(removedResponse.response.writableEnded, true, 'terminal removal did not close the HTTP console stream');
+  assert.equal(terminalControllerUnsubscribed, 1, 'terminal removal did not unsubscribe the HTTP listener');
+  assert.ok(
+    removedResponse.frames.join('').includes('"terminal":true'),
+    'the controller did not forward terminal metadata to the browser'
+  );
+
+  const recreatedResponse = createSseResponse();
+  await terminalController.streamConsole(
+    'node-new',
+    'server-recreated',
+    { user: { id: 'old-viewer' } },
+    { raw: recreatedResponse.response }
+  );
+  assert.equal(permissionChecks, 2, 'same-id recreation reused the deleted server HTTP authorization');
+  recreatedResponse.response.emit('close');
+
   console.log('Realtime fan-out self-test passed: listeners share work, transient selections stay local, idle feeds stop immediately, agent history resumes, and abandoned RPCs cancel.');
+}
+
+function createSseResponse() {
+  const response = new EventEmitter();
+  const frames = [];
+  response.destroyed = false;
+  response.writableEnded = false;
+  response.writeHead = () => undefined;
+  response.flushHeaders = () => undefined;
+  response.flush = () => undefined;
+  response.end = () => { response.writableEnded = true; };
+  response.destroy = () => { response.destroyed = true; };
+  response.write = frame => {
+    frames.push(frame);
+    return true;
+  };
+  return { response, frames };
 }
 
 async function waitFor(predicate, message) {

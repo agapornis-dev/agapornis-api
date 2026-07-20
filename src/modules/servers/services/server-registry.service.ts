@@ -32,10 +32,15 @@ import { normalizeServerStatus } from './server-status';
 export type { CollaboratorPermission, ServerAccess, ServerCollaborator, ServerPermissionScope, ServerRecord, ServerSettingsPatch } from './server-registry.types';
 export { SERVER_PERMISSION_SCOPES } from './server-registry.types';
 
+export interface ServerRemovedNotification {
+  serverId: string;
+}
+
 @Injectable()
 export class ServerRegistryService implements OnModuleInit {
   private readonly servers = new Map<string, ServerRecord>();
   private readonly reservationLocks = new Map<string, Promise<void>>();
+  private readonly serverRemovedListeners = new Set<(notification: ServerRemovedNotification) => void>();
   private readonly dataFile = path.join(__dirname, '..', '..', '..', 'data', 'servers.json');
 
   constructor(
@@ -574,7 +579,16 @@ export class ServerRegistryService implements OnModuleInit {
       this.save();
     }
 
+    this.notifyServerRemoved(id);
+
     return { id, deleted: true };
+  }
+
+  subscribeServerRemoved(listener: (notification: ServerRemovedNotification) => void) {
+    this.serverRemovedListeners.add(listener);
+    return () => {
+      this.serverRemovedListeners.delete(listener);
+    };
   }
 
   async usedPorts(nodeId?: string) {
@@ -1157,6 +1171,18 @@ export class ServerRegistryService implements OnModuleInit {
     if (permission === 'read_only') return ['console.view', 'files.view'] as ServerPermissionScope[];
     const allowed = new Set<string>(SERVER_PERMISSION_SCOPES);
     return Array.from(new Set(values.map(String).filter(value => allowed.has(value)))) as ServerPermissionScope[];
+  }
+
+  private notifyServerRemoved(serverId: string) {
+    const notification = { serverId };
+    for (const listener of [...this.serverRemovedListeners]) {
+      try {
+        listener(notification);
+      } catch {
+        // Deletion has already succeeded; one stale observer must not make the
+        // registry report that the server still exists.
+      }
+    }
   }
 
   private save() {

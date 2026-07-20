@@ -250,7 +250,12 @@ export class ServerRuntimeController {
       id,
       serverId,
       message => {
-        writeEvent(message.event, message.payload);
+        writeEvent(
+          message.event,
+          message.terminal
+            ? { ...message.payload, terminal: true }
+            : message.payload,
+        );
 
         if (message.terminal) {
           closeResponse();

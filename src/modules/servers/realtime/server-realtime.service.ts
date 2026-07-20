@@ -59,6 +59,7 @@ export class ServerRealtimeService implements OnModuleDestroy {
   private readonly consoleBatchEntryLimit: number;
   private readonly consoleBatchCharacterLimit: number;
   private readonly statsDisconnectGraceMs: number;
+  private readonly unsubscribeServerRemoved: () => void;
   private nextStatsListenerId = 0;
   private readonly diagnosticsTimer: NodeJS.Timeout;
   private readonly processSamples: Array<{
@@ -98,6 +99,9 @@ export class ServerRealtimeService implements OnModuleDestroy {
     this.consoleBatchEntryLimit = config.positiveInt('SERVER_CONSOLE_BATCH_ENTRY_LIMIT', 16);
     this.consoleBatchCharacterLimit = config.positiveInt('SERVER_CONSOLE_BATCH_CHARACTER_LIMIT', 12 * 1024);
     this.statsDisconnectGraceMs = config.positiveInt('SERVER_STATS_DISCONNECT_GRACE_MS', 5_000);
+    this.unsubscribeServerRemoved = this.registry.subscribeServerRemoved(({ serverId }) => {
+      this.terminateRemovedServerConsoleFeeds(serverId);
+    });
     this.diagnosticsTimer = setInterval(() => this.sampleProcess(), 1_000);
     this.diagnosticsTimer.unref?.();
   }
@@ -183,6 +187,7 @@ export class ServerRealtimeService implements OnModuleDestroy {
 
   onModuleDestroy() {
     clearInterval(this.diagnosticsTimer);
+    this.unsubscribeServerRemoved();
     for (const [key, feed] of this.statsFeeds) this.stopStatsFeed(key, feed);
     for (const [key, feed] of this.consoleFeeds) this.stopConsoleFeed(key, feed);
   }
@@ -373,6 +378,24 @@ export class ServerRealtimeService implements OnModuleDestroy {
     const call = feed.call;
     feed.call = undefined;
     call?.cancel?.();
+  }
+
+  private terminateRemovedServerConsoleFeeds(serverId: string) {
+    for (const [key, feed] of [...this.consoleFeeds]) {
+      if (feed.serverId !== serverId || !this.isCurrentConsoleFeed(key, feed)) continue;
+      this.flushConsole(feed);
+      this.broadcast(feed.listeners, {
+        event: 'console-terminal',
+        payload: {
+          nodeId: feed.nodeId,
+          serverId: feed.serverId,
+          reason: 'server-removed',
+          message: 'Server was removed. This console connection has been closed.'
+        },
+        terminal: true
+      });
+      this.stopConsoleFeed(key, feed);
+    }
   }
 
   private scheduleConsoleReconnect(key: string, feed: ConsoleFeed) {
