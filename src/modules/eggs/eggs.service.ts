@@ -74,7 +74,7 @@ export class EggsService implements OnModuleInit {
       dockerImages: egg.dockerImages,
       startup: egg.startup,
       variables: includeVariables
-        ? (privileged ? egg.variables : egg.variables.filter(variable => variable.userEditable))
+        ? (privileged ? egg.variables : egg.variables.filter(variable => this.isUserEditableVariable(variable)))
         : [],
       install: privileged ? egg.install : undefined
     };
@@ -189,9 +189,17 @@ export class EggsService implements OnModuleInit {
     if (!id) return new Set<string>();
     return new Set(
       this.get(id).variables
-        .filter(variable => variable.userEditable)
+        .filter(variable => this.isUserEditableVariable(variable))
         .map(variable => variable.envVariable.toUpperCase())
     );
+  }
+
+  private isUserEditableVariable(variable: EggVariable) {
+    // QUERY_PORT is the one self-service networking variable. Its historical
+    // Pterodactyl metadata often marks it non-editable, but Agapornis allows
+    // users with settings access to tune it without granting control over
+    // SERVER_PORT or other allocations.
+    return variable.userEditable || variable.envVariable.toUpperCase() === 'QUERY_PORT';
   }
 
   import(raw: any) {

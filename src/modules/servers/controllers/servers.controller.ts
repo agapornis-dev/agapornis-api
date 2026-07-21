@@ -474,7 +474,9 @@ export class ServersController {
       cpuLimitPercentage: server.cpuLimitPercentage,
       cpuCores: server.cpuCores,
       diskLimitBytes: server.diskLimitBytes,
-      serverPort: body?.serverPort || body?.server_port || effectiveVariables.SERVER_PORT || server.variables?.SERVER_PORT,
+      serverPort: canManagePorts
+        ? body?.serverPort || body?.server_port || effectiveVariables.SERVER_PORT || server.variables?.SERVER_PORT
+        : effectiveVariables.SERVER_PORT || server.variables?.SERVER_PORT,
       hostPort: canManagePorts
         ? body?.hostPort || body?.host_port || body?.port || server.assignedHostPort
         : server.assignedHostPort,

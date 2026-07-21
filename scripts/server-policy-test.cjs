@@ -7,6 +7,7 @@ const { ServerDatabasesService } = require('../src/modules/servers/services/serv
 const { ServerFilesController } = require('../src/modules/servers/controllers/server-files.controller.ts');
 const { ServersController } = require('../src/modules/servers/controllers/servers.controller.ts');
 const { ServerSettingsController } = require('../src/modules/servers/controllers/server-settings.controller.ts');
+const { EggsService } = require('../src/modules/eggs/eggs.service.ts');
 const { createServerRequest } = require('../src/modules/servers/utils/server-controller.helpers.ts');
 const { resolveServer } = require('../src/modules/eggs/egg-resolver.ts');
 
@@ -22,12 +23,13 @@ async function main() {
   const existing = {
     SERVER_ID: 'server-1',
     SERVER_PORT: '25565',
+    QUERY_PORT: '27015',
     SERVER_MEMORY: '2048',
     SERVER_IP: 'node.example.test',
     PUBLIC_SETTING: 'old',
     INTERNAL_SECRET: 'keep'
   };
-  const editable = new Set(['PUBLIC_SETTING']);
+  const editable = new Set(['PUBLIC_SETTING', 'QUERY_PORT']);
 
   const userUpdate = support.applyVariableUpdate(
     { PUBLIC_SETTING: 'new' },
@@ -38,6 +40,29 @@ async function main() {
   assert.equal(userUpdate.PUBLIC_SETTING, 'new');
   assert.equal(userUpdate.INTERNAL_SECRET, 'keep');
   assert.equal(userUpdate.SERVER_ID, 'server-1');
+
+  const selfServicePortMetadata = JSON.stringify([
+    { variable: 'SERVER_PORT', internalPort: 25565, hostPort: 30001, protocol: 'tcp' },
+    { variable: 'QUERY_PORT', internalPort: 27015, hostPort: 30002, protocol: 'tcp' }
+  ]);
+  const userQueryPortUpdate = support.applyVariableUpdate(
+    { QUERY_PORT: '27016' },
+    { ...existing, AGAPORNIS_PORT_MAPPINGS: selfServicePortMetadata },
+    editable,
+    { role: 'user' }
+  );
+  assert.equal(userQueryPortUpdate.QUERY_PORT, '27016');
+  assert.equal(JSON.parse(userQueryPortUpdate.AGAPORNIS_PORT_MAPPINGS)[1].internalPort, 27016);
+  assert.throws(
+    () => support.applyVariableUpdate({ SERVER_PORT: '25566' }, existing, editable, { role: 'user' }),
+    /not user-editable/,
+    'normal users must not be allowed to change SERVER_PORT'
+  );
+  assert.throws(
+    () => support.applyVariableUpdate({ QUERY_PORT: '65536' }, existing, editable, { role: 'user' }),
+    /between 1 and 65535/,
+    'QUERY_PORT must remain a valid network port'
+  );
 
   assert.throws(
     () => support.applyVariableUpdate({ INTERNAL_SECRET: 'changed' }, existing, editable, { role: 'user' }),
@@ -68,6 +93,19 @@ async function main() {
   const ownerUpdate = support.applyVariableUpdate({ PUBLIC_SETTING: 'owner' }, existing, editable, { role: 'owner' });
   assert.equal(ownerUpdate.SERVER_ID, 'server-1');
   assert.equal(ownerUpdate.SERVER_MEMORY, '2048');
+  const eggVariablePolicy = Object.create(EggsService.prototype);
+  eggVariablePolicy.get = () => ({
+    variables: [
+      { envVariable: 'PUBLIC_SETTING', userEditable: true },
+      { envVariable: 'QUERY_PORT', userEditable: false },
+      { envVariable: 'SERVER_PORT', userEditable: false }
+    ]
+  });
+  assert.deepEqual(
+    [...eggVariablePolicy.userEditableVariableKeys('egg-1')].sort(),
+    ['PUBLIC_SETTING', 'QUERY_PORT'],
+    'QUERY_PORT must be self-service even when imported egg metadata marks it non-editable'
+  );
   const percentageResourcePatch = support.resourcePatch({ memoryMb: 2048, diskMb: 4096, cpuLimitPercentage: 175, cpuPinnedThreads: '2-4,6', swapMemoryMb: 512, swapMemoryStorage: 'server' });
   assert.equal(percentageResourcePatch.memoryBytes, 2048 * 1024 * 1024);
   assert.equal(percentageResourcePatch.diskLimitBytes, 4096 * 1024 * 1024);
@@ -137,7 +175,7 @@ async function main() {
     memoryBytes: 2048 * 1024 * 1024, cpuLimitPercentage: 100, diskLimitBytes: 10240 * 1024 * 1024,
     assignedHostPort: 30001,
     variables: {
-      SERVER_MEMORY: '2048', SERVER_PORT: '25565', SERVER_IP: 'node.example.test',
+      SERVER_MEMORY: '2048', SERVER_PORT: '25565', QUERY_PORT: '27015', SERVER_IP: 'node.example.test',
       DOCKER_IMAGE: 'example/server:selected', CUSTOM_CREATED: 'custom-value', STARTUP: 'stale startup'
     },
     createdAt: new Date().toISOString()
@@ -171,7 +209,7 @@ async function main() {
       updateServerConfiguration: async (_nodeId, request) => { runtimeConfiguration = request; return { success: true }; }
     },
     {
-      userEditableVariableKeys: () => new Set(['CUSTOM_CREATED']),
+      userEditableVariableKeys: () => new Set(['CUSTOM_CREATED', 'QUERY_PORT']),
       resolveServer: (_eggId, body) => resolveServer({
         id: 'startup-variable-test', name: 'Startup variable test', description: '', nestId: 'test',
         images: ['example/server:selected'], environment: {}, variables: [],
@@ -203,6 +241,23 @@ async function main() {
   assert.equal(savedSettingsPatch.name, 'Renamed display');
   assert.equal(settingsServer.id, 'server-1', 'renaming must not change the server UUID');
   settingsSupport.canManageResources = () => false;
+  await settingsController.updateSettings(
+    'node-1',
+    'server-1',
+    { variables: { QUERY_PORT: '27016' } },
+    { user: { id: 'user-1', role: 'user', email: 'user@example.test' } }
+  );
+  assert.equal(savedSettingsPatch.variables.QUERY_PORT, '27016', 'normal users must be able to change QUERY_PORT');
+  await assert.rejects(
+    settingsController.updateSettings(
+      'node-1',
+      'server-1',
+      { variables: { SERVER_PORT: '25566' } },
+      { user: { id: 'user-1', role: 'user', email: 'user@example.test' } }
+    ),
+    /not user-editable/,
+    'normal users must not be able to change SERVER_PORT through the settings API'
+  );
   await assert.rejects(
     settingsController.updateSettings('node-1', 'server-1', { name: 'User rename' }, { user: { id: 'user-1', role: 'user', email: 'user@example.test' } }),
     /panel administrator/,
@@ -225,12 +280,12 @@ async function main() {
   assert.throws(() => support.resourcePatch({ cpuPinnedThreads: '4-2' }), /invalid pinned CPU thread range/);
 
   const installVariables = support.filterEggInstallVariables(
-    { PUBLIC_SETTING: 'install', SERVER_PORT: '25565' },
+    { PUBLIC_SETTING: 'install', QUERY_PORT: '27016', SERVER_PORT: '25565' },
     existing,
     editable,
     { role: 'user' }
   );
-  assert.deepEqual(installVariables, { PUBLIC_SETTING: 'install' });
+  assert.deepEqual(installVariables, { PUBLIC_SETTING: 'install', QUERY_PORT: '27016' });
 
   await support.reserveServer('node-1', {
     serverId: 'server-1',

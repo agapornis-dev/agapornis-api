@@ -218,7 +218,8 @@ export class ServerSettingsController {
         this.eggs.userEditableVariableKeys(server.eggId),
         req.user
       );
-      if (canManageResources) {
+      const portVariablesChanged = this.portVariablesChanged(patch.variables, server.variables);
+      if (canManageResources || portVariablesChanged) {
         try {
           patch.variables = await this.registry.reconcilePortAllocations(serverId, patch.variables);
         } catch (error: any) {
@@ -340,5 +341,12 @@ export class ServerSettingsController {
       throw new Error('egg startup command does not contain a safe server JAR path');
     }
     return candidate;
+  }
+
+  private portVariablesChanged(next: Record<string, string>, existing?: Record<string, string>) {
+    const keys = new Set([...Object.keys(next), ...Object.keys(existing || {})]);
+    return [...keys]
+      .filter(key => /(^|_)PORT($|_)/i.test(key) && key !== 'AGAPORNIS_PORT_MAPPINGS')
+      .some(key => next[key] !== existing?.[key]);
   }
 }

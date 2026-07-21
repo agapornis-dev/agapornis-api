@@ -56,6 +56,7 @@ const HIDDEN_RESOURCE_VARIABLE_KEYS = new Set([
 ]);
 
 const PORT_VARIABLE_PATTERN = /(^|_)PORT($|_)/i;
+const SELF_SERVICE_PORT_VARIABLE_KEYS = new Set(['QUERY_PORT']);
 
 type ForwardErrorMapping = {
   status: HttpStatus;
@@ -434,11 +435,13 @@ export class ServerRouteSupportService {
   ) {
     if (user?.role === 'owner') {
       this.rejectServerIdChange(next, existing);
+      this.validateQueryPortChange(next, existing);
       return this.syncPortMappingVariables(this.keepHiddenResourceVariables(this.keepInternalMetadata(next, existing), existing));
     }
 
     if (user?.role === 'admin') {
       this.rejectServerIdChange(next, existing);
+      this.validateQueryPortChange(next, existing);
       const merged = { ...next };
       if (existing?.SERVER_ID !== undefined) merged.SERVER_ID = existing.SERVER_ID;
       else delete merged.SERVER_ID;
@@ -452,12 +455,13 @@ export class ServerRouteSupportService {
         throw new HttpException(`variable '${key}' is not user-editable`, HttpStatus.FORBIDDEN);
       }
     }
+    this.validateQueryPortChange(next, existing);
 
     const merged = { ...(existing || {}) };
     for (const key of allowed) {
       if (Object.prototype.hasOwnProperty.call(next, key)) merged[key] = next[key];
     }
-    return merged;
+    return this.syncPortMappingVariables(merged);
   }
 
   filterEggInstallVariables(
@@ -528,7 +532,18 @@ export class ServerRouteSupportService {
   }
 
   private isProtectedVariableKey(key: string) {
-    return RESOURCE_VARIABLE_KEYS.has(key) || PORT_VARIABLE_PATTERN.test(key);
+    return RESOURCE_VARIABLE_KEYS.has(key)
+      || (PORT_VARIABLE_PATTERN.test(key) && !SELF_SERVICE_PORT_VARIABLE_KEYS.has(key));
+  }
+
+  private validateQueryPortChange(next: Record<string, string>, existing?: Record<string, string>) {
+    if (!Object.prototype.hasOwnProperty.call(next, 'QUERY_PORT') || next.QUERY_PORT === existing?.QUERY_PORT) {
+      return;
+    }
+    const port = Number(next.QUERY_PORT);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new HttpException("variable 'QUERY_PORT' must contain a number between 1 and 65535", HttpStatus.BAD_REQUEST);
+    }
   }
 
   allowedEggIds(body: any, primaryEggId?: string) {
