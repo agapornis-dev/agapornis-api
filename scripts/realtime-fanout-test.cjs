@@ -407,6 +407,10 @@ async function main() {
     }
   );
   await controller.streamConsole('node-a', 'server-backpressure', { user: {} }, { raw: response });
+  assert.ok(
+    String(writtenFrames[0]).includes('event: agent-action'),
+    'console stream wrote a padding frame before usable SSE data'
+  );
   assert.equal(
     writtenFrames.some(frame => String(frame).includes('console-history-ready')),
     false,

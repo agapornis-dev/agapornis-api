@@ -173,12 +173,8 @@ export class ServerRuntimeController {
       'X-Accel-Buffering': 'no',
     });
 
+    res.socket?.setNoDelay(true);
     res.flushHeaders?.();
-
-    // Push enough data to cross buffering thresholds in intermediary proxies
-    // immediately. The frame is an SSE comment, so browsers ignore it.
-    backpressured = !res.write(`: ${' '.repeat(2048)}\n\n`);
-    (res as any).flush?.();
 
     const canWrite = () => !closed && !res.destroyed && !res.writableEnded;
     const heartbeat = setInterval(() => {
