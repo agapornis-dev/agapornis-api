@@ -218,7 +218,11 @@ export class ServerRouteSupportService {
     const explicit = Number(body?.portCount ?? body?.port_count ?? body?.ports);
     if (Number.isFinite(explicit) && explicit > 0) return Math.min(32, Math.floor(explicit));
     const variables = normalizeVariables(body?.variables || body?.env || body?.envVars || body?.env_vars || {});
-    const portVariables = Object.keys(variables).filter(key => PORT_VARIABLE_PATTERN.test(key) && key !== 'AGAPORNIS_PORT_MAPPINGS');
+    const portVariables = Object.keys(variables).filter(key =>
+      PORT_VARIABLE_PATTERN.test(key)
+      && key !== 'AGAPORNIS_PORT_MAPPINGS'
+      && key.toUpperCase() !== 'QUERY_PORT'
+    );
     return Math.max(1, portVariables.length);
   }
 
@@ -512,6 +516,7 @@ export class ServerRouteSupportService {
       const mappings = JSON.parse(String(variables.AGAPORNIS_PORT_MAPPINGS || '[]'));
       if (!Array.isArray(mappings)) return variables;
       const synchronized = mappings.map(mapping => {
+        if (String(mapping?.variable || '').toUpperCase() === 'QUERY_PORT') return mapping;
         const value = Number(variables[String(mapping?.variable || '')]);
         return Number.isInteger(value) && value > 0 && value <= 65535
           ? { ...mapping, internalPort: value }
@@ -544,6 +549,31 @@ export class ServerRouteSupportService {
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new HttpException("variable 'QUERY_PORT' must contain a number between 1 and 65535", HttpStatus.BAD_REQUEST);
     }
+    if (!this.additionalPortValues(existing).has(port)) {
+      throw new HttpException(
+        "variable 'QUERY_PORT' must use a port allocated as ADDITIONAL_PORT_N",
+        HttpStatus.BAD_REQUEST
+      );
+    }
+  }
+
+  private additionalPortValues(variables?: Record<string, string>) {
+    let mappings: any[] = [];
+    try {
+      const parsed = JSON.parse(String(variables?.AGAPORNIS_PORT_MAPPINGS || '[]'));
+      if (Array.isArray(parsed)) mappings = parsed;
+    } catch {}
+
+    return new Set(
+      mappings
+        .filter(mapping => /^ADDITIONAL_PORT_[1-9][0-9]*$/i.test(String(mapping?.variable || '')))
+        .map(mapping => {
+          const variable = String(mapping.variable).toUpperCase();
+          const configured = Number(variables?.[variable]);
+          return Number.isInteger(configured) ? configured : Number(mapping.internalPort);
+        })
+        .filter(port => Number.isInteger(port) && port > 0 && port <= 65535)
+    );
   }
 
   allowedEggIds(body: any, primaryEggId?: string) {

@@ -24,12 +24,18 @@ async function main() {
     SERVER_ID: 'server-1',
     SERVER_PORT: '25565',
     QUERY_PORT: '27015',
+    ADDITIONAL_PORT_1: '27016',
     SERVER_MEMORY: '2048',
     SERVER_IP: 'node.example.test',
     PUBLIC_SETTING: 'old',
     INTERNAL_SECRET: 'keep'
   };
   const editable = new Set(['PUBLIC_SETTING', 'QUERY_PORT']);
+  assert.equal(
+    support.requestedPortCount({ variables: { SERVER_PORT: '25565', QUERY_PORT: '27016', ADDITIONAL_PORT_1: '27016' } }),
+    2,
+    'QUERY_PORT is an alias and must not consume a separate allocation'
+  );
 
   const userUpdate = support.applyVariableUpdate(
     { PUBLIC_SETTING: 'new' },
@@ -43,7 +49,7 @@ async function main() {
 
   const selfServicePortMetadata = JSON.stringify([
     { variable: 'SERVER_PORT', internalPort: 25565, hostPort: 30001, protocol: 'tcp' },
-    { variable: 'QUERY_PORT', internalPort: 27015, hostPort: 30002, protocol: 'tcp' }
+    { variable: 'ADDITIONAL_PORT_1', internalPort: 27016, hostPort: 30002, protocol: 'tcp' }
   ]);
   const userQueryPortUpdate = support.applyVariableUpdate(
     { QUERY_PORT: '27016' },
@@ -52,7 +58,27 @@ async function main() {
     { role: 'user' }
   );
   assert.equal(userQueryPortUpdate.QUERY_PORT, '27016');
-  assert.equal(JSON.parse(userQueryPortUpdate.AGAPORNIS_PORT_MAPPINGS)[1].internalPort, 27016);
+  assert.deepEqual(
+    JSON.parse(userQueryPortUpdate.AGAPORNIS_PORT_MAPPINGS),
+    JSON.parse(selfServicePortMetadata),
+    'changing QUERY_PORT must not rewrite allocation metadata'
+  );
+  const optionRegistry = Object.create(ServerRegistryService.prototype);
+  assert.deepEqual(
+    optionRegistry.queryPortOptions({ ...existing, AGAPORNIS_PORT_MAPPINGS: selfServicePortMetadata }),
+    [{ variable: 'ADDITIONAL_PORT_1', port: 27016 }],
+    'the client must receive only allocated ADDITIONAL_PORT_N values as query options'
+  );
+  assert.throws(
+    () => support.applyVariableUpdate(
+      { QUERY_PORT: '27017' },
+      { ...existing, AGAPORNIS_PORT_MAPPINGS: selfServicePortMetadata },
+      editable,
+      { role: 'user' }
+    ),
+    /allocated as ADDITIONAL_PORT_N/,
+    'QUERY_PORT must be selected from an allocated additional port'
+  );
   assert.throws(
     () => support.applyVariableUpdate({ SERVER_PORT: '25566' }, existing, editable, { role: 'user' }),
     /not user-editable/,
@@ -175,7 +201,8 @@ async function main() {
     memoryBytes: 2048 * 1024 * 1024, cpuLimitPercentage: 100, diskLimitBytes: 10240 * 1024 * 1024,
     assignedHostPort: 30001,
     variables: {
-      SERVER_MEMORY: '2048', SERVER_PORT: '25565', QUERY_PORT: '27015', SERVER_IP: 'node.example.test',
+      SERVER_MEMORY: '2048', SERVER_PORT: '25565', QUERY_PORT: '27015', ADDITIONAL_PORT_1: '27016', SERVER_IP: 'node.example.test',
+      AGAPORNIS_PORT_MAPPINGS: selfServicePortMetadata,
       DOCKER_IMAGE: 'example/server:selected', CUSTOM_CREATED: 'custom-value', STARTUP: 'stale startup'
     },
     createdAt: new Date().toISOString()
@@ -438,8 +465,11 @@ async function main() {
   const allocated = await allocationRegistry.assignPortAllocations('ports-1', 2, 30000, 30010);
   const mappings = allocationRegistry.portMappings(allocated.variables);
   assert.deepEqual(mappings.map(mapping => mapping.hostPort), [30002, 30000]);
-  assert.deepEqual(mappings.map(mapping => mapping.internalPort), [25565, 27015]);
+  assert.deepEqual(mappings.map(mapping => mapping.variable), ['SERVER_PORT', 'ADDITIONAL_PORT_1']);
+  assert.deepEqual(mappings.map(mapping => mapping.internalPort), [25565, 30000]);
   assert.equal(allocated.variables.SERVER_PORT, '25565', 'allocating a public port must not rewrite the workload port');
+  assert.equal(allocated.variables.ADDITIONAL_PORT_1, '30000', 'QUERY_PORT must not consume its own allocation');
+  assert.equal(allocated.variables.QUERY_PORT, '27015', 'allocating ports must not rewrite the query listener alias');
 
   let livePortRecord = { ...allocated, status: 'created' };
   allocationRegistry.get = async () => livePortRecord;
@@ -454,7 +484,7 @@ async function main() {
   });
   const reconciled = allocationRegistry.portMappings(reconciledVariables);
   assert.equal(reconciled.length, 3, 'saving the comma-separated admin port field must reserve added ports');
-  assert.deepEqual(reconciled.map(mapping => mapping.internalPort), [25565, 27015, 27016]);
+  assert.deepEqual(reconciled.map(mapping => mapping.internalPort), [25565, 30000, 27016]);
   assert.equal(reconciledVariables.SERVER_PORT_3, undefined);
   assert.equal(reconciledVariables.ADDITIONAL_PORT_2, '27016');
 

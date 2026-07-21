@@ -364,7 +364,11 @@ export class ServerRegistryService implements OnModuleInit {
   async reconcilePortAllocations(id: string, variables: Record<string, string>) {
     const server = await this.get(id);
     if (!server) throw new Error('server not found');
-    const portKeys = Object.keys(variables).filter(key => /(^|_)PORT($|_)/i.test(key) && key !== 'AGAPORNIS_PORT_MAPPINGS');
+    const portKeys = Object.keys(variables).filter(key =>
+      /(^|_)PORT($|_)/i.test(key)
+      && key !== 'AGAPORNIS_PORT_MAPPINGS'
+      && key.toUpperCase() !== 'QUERY_PORT'
+    );
     if (portKeys.length > 32) throw new Error('a server can have at most 32 ports');
     const internalPorts = portKeys.map(key => Number(variables[key]));
     if (internalPorts.some(port => !Number.isInteger(port) || port < 1 || port > 65535)) {
@@ -781,6 +785,7 @@ export class ServerRegistryService implements OnModuleInit {
     const access = this.accessFor(server, user);
     const assignedPorts = this.portMappings(server.variables).map(mapping => mapping.hostPort);
     const canViewSettings = this.canPerform(server, user, 'settings');
+    const queryPortOptions = canViewSettings ? this.queryPortOptions(server.variables) : undefined;
     const canViewDatabases = this.canPerform(server, user, 'databases');
     const canViewBackups = this.canPerform(server, user, 'backups');
     const canManageResources = ['owner', 'admin'].includes(user.role);
@@ -793,6 +798,7 @@ export class ServerRegistryService implements OnModuleInit {
       eggId: server.eggId,
       assignedPorts,
       assignedHostPort: server.assignedHostPort,
+      queryPortOptions,
       status: server.status,
       memoryBytes: server.memoryBytes,
       cpuLimitPercentage: server.cpuLimitPercentage,
@@ -873,6 +879,23 @@ export class ServerRegistryService implements OnModuleInit {
     );
   }
 
+  private queryPortOptions(variables?: Record<string, string>) {
+    return this.portMappings(variables)
+      .filter(mapping => /^ADDITIONAL_PORT_[1-9][0-9]*$/i.test(String(mapping?.variable || '')))
+      .map(mapping => {
+        const variable = String(mapping.variable).toUpperCase();
+        const configured = Number(variables?.[variable]);
+        const internal = Number(mapping.internalPort);
+        return {
+          variable,
+          port: Number.isInteger(configured) && configured > 0 && configured <= 65535
+            ? configured
+            : internal
+        };
+      })
+      .filter(option => Number.isInteger(option.port) && option.port > 0 && option.port <= 65535);
+  }
+
   private userEditableVariableKeys(eggId?: string) {
     try {
       return this.eggs?.userEditableVariableKeys(eggId) || new Set<string>();
@@ -939,11 +962,16 @@ export class ServerRegistryService implements OnModuleInit {
 
   private withPortMappings(existing: Record<string, string> | undefined, ports: number[], previous?: Record<string, string>) {
     const variables = { ...(existing || {}) };
-    const previousMappings = this.portMappings(previous);
+    const previousMappings = this.portMappings(previous)
+      .filter(mapping => String(mapping?.variable || '').toUpperCase() !== 'QUERY_PORT');
     const previousKeys = previousMappings.map(mapping => String(mapping.variable));
     const isExpansion = ports.length > previousMappings.length;
     const configuredKeys = Object.keys(variables)
-      .filter(key => /(^|_)PORT($|_)/i.test(key) && key !== 'AGAPORNIS_PORT_MAPPINGS')
+      .filter(key =>
+        /(^|_)PORT($|_)/i.test(key)
+        && key !== 'AGAPORNIS_PORT_MAPPINGS'
+        && key.toUpperCase() !== 'QUERY_PORT'
+      )
       .sort((left, right) => {
         const leftIndex = previousKeys.indexOf(left); const rightIndex = previousKeys.indexOf(right);
         if (leftIndex >= 0 || rightIndex >= 0) return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
@@ -994,15 +1022,21 @@ export class ServerRegistryService implements OnModuleInit {
     max: number,
     used: Set<number>
   ) {
-    const currentMappings = this.portMappings(server.variables);
+    const allCurrentMappings = this.portMappings(server.variables);
+    const currentMappings = allCurrentMappings
+      .filter(mapping => String(mapping?.variable || '').toUpperCase() !== 'QUERY_PORT');
     const currentPorts = currentMappings.map(mapping => Number(mapping.hostPort)).filter(port => port > 0);
-    for (const port of currentPorts) used.delete(port);
+    for (const mapping of allCurrentMappings) used.delete(Number(mapping.hostPort));
     if (server.assignedHostPort) used.delete(server.assignedHostPort);
 
     const requested = requestedVariables || server.variables || {};
     const previousKeys = currentMappings.map(mapping => String(mapping.variable));
     const configuredKeys = Object.keys(requested)
-      .filter(key => /(^|_)PORT($|_)/i.test(key) && key !== 'AGAPORNIS_PORT_MAPPINGS')
+      .filter(key =>
+        /(^|_)PORT($|_)/i.test(key)
+        && key !== 'AGAPORNIS_PORT_MAPPINGS'
+        && key.toUpperCase() !== 'QUERY_PORT'
+      )
       .sort((left, right) => {
         const leftIndex = previousKeys.indexOf(left); const rightIndex = previousKeys.indexOf(right);
         if (leftIndex >= 0 || rightIndex >= 0) return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);

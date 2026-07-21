@@ -10,6 +10,7 @@ export interface ServerRecord {
   ownerUserId?: string;
   assignedHostPort?: number;
   assignedPorts?: number[];
+  queryPortOptions?: Array<{ variable: string; port: number }>;
   status: string;
   memoryBytes?: number;
   cpuLimitPercentage?: number;

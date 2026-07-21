@@ -219,7 +219,7 @@ export class ServerSettingsController {
         req.user
       );
       const portVariablesChanged = this.portVariablesChanged(patch.variables, server.variables);
-      if (canManageResources || portVariablesChanged) {
+      if (portVariablesChanged) {
         try {
           patch.variables = await this.registry.reconcilePortAllocations(serverId, patch.variables);
         } catch (error: any) {
@@ -347,6 +347,7 @@ export class ServerSettingsController {
     const keys = new Set([...Object.keys(next), ...Object.keys(existing || {})]);
     return [...keys]
       .filter(key => /(^|_)PORT($|_)/i.test(key) && key !== 'AGAPORNIS_PORT_MAPPINGS')
+      .filter(key => key !== 'QUERY_PORT')
       .some(key => next[key] !== existing?.[key]);
   }
 }
