@@ -40,6 +40,10 @@ export class FreezeServerDto {
   reason?: string;
 }
 
+export class StopServerDto {
+  force?: boolean;
+}
+
 export class ChangeServerEggDto {
   eggId?: string;
   egg_id?: string;

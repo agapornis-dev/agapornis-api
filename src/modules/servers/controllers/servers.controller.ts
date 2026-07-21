@@ -20,7 +20,14 @@ import { GameVersionCatalogService } from '../services/game-version-catalog.serv
 import { ServerDatabasesService } from '../services/server-databases.service';
 import { ServerPlacementService } from '../services/server-placement.service';
 import { diskLimitBytes, memoryBytes, requiredStorageBytes } from '../utils/server-controller.helpers';
-import { ChangeServerEggDto, CreateServerDto, CreateServerFromEggDto, DeleteServerDto, FreezeServerDto } from '../dto/server.dto';
+import {
+  ChangeServerEggDto,
+  CreateServerDto,
+  CreateServerFromEggDto,
+  DeleteServerDto,
+  FreezeServerDto,
+  StopServerDto
+} from '../dto/server.dto';
 import { RedisService } from '../../redis/redis.service';
 
 const CONTAINER_UPDATE_COOLDOWN_SECONDS = 60 * 60;
@@ -278,16 +285,30 @@ export class ServersController {
 
   @Post(':serverId/stop')
   @Roles('user')
-  async stopServer(@Param('id') id: string, @Param('serverId') serverId: string, @Req() req: any) {
+  async stopServer(
+    @Param('id') id: string,
+    @Param('serverId') serverId: string,
+    @Body() body: StopServerDto,
+    @Req() req: any
+  ) {
     await this.support.requireNodeServerPermission(id, serverId, req.user, 'power');
+    const force = body?.force === true;
     const resp = await this.support.forward('stop-server', id, serverId, () =>
-      this.client.stopServer(id, serverId)
+      this.client.stopServer(id, serverId, undefined, force)
     );
     await this.databases.powerAllForServer(serverId, 'stop');
     await this.registry.setStatus(serverId, 'stopped');
     await this.support.dispatchServerEvent('server.stopped', id, serverId, 'stopped');
     void this.support.notifyServerOwner('serverStopped', serverId, 'stopped');
-    this.activityLog.log({ event: 'server.stopped', userId: req.user?.id, userEmail: req.user?.email, serverId, nodeId: id, ip: this.support.clientIp(req) });
+    this.activityLog.log({
+      event: 'server.stopped',
+      userId: req.user?.id,
+      userEmail: req.user?.email,
+      serverId,
+      nodeId: id,
+      meta: { mode: force ? 'force' : 'graceful' },
+      ip: this.support.clientIp(req)
+    });
     return this.support.publicActionResult(resp);
   }
 

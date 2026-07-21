@@ -96,11 +96,11 @@ export class AgentClientService {
     );
   }
 
-  stopServer(nodeId: string, serverId: string, token?: string) {
+  stopServer(nodeId: string, serverId: string, token?: string, force = false) {
     return this.callServer(
       nodeId,
       'StopServer',
-      { server_id: serverId },
+      { server_id: serverId, force },
       token
     );
   }
