@@ -22,6 +22,7 @@ import { ServerRealtimeService } from '../realtime/server-realtime.service';
 import { SendServerCommandDto } from '../dto/server-runtime.dto';
 
 const MAX_CONSOLE_SSE_QUEUE_BYTES = 4 * 1024 * 1024;
+const CONSOLE_SSE_FLUSH_KICK_DELAY_MS = 75;
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('agents/:id/servers')
@@ -163,6 +164,7 @@ export class ServerRuntimeController {
     let closed = false;
     let backpressured = false;
     let unsubscribe: (() => void) | undefined;
+    let flushKick: ReturnType<typeof setTimeout> | undefined;
     const queuedFrames: Array<{ frame: string; bytes: number }> = [];
     let queuedBytes = 0;
 
@@ -188,6 +190,8 @@ export class ServerRuntimeController {
       if (closed) return;
       closed = true;
       clearInterval(heartbeat);
+      if (flushKick) clearTimeout(flushKick);
+      flushKick = undefined;
       queuedFrames.length = 0;
       queuedBytes = 0;
       unsubscribe?.();
@@ -199,16 +203,37 @@ export class ServerRuntimeController {
       }
     };
 
+    const scheduleFlushKick = () => {
+      if (flushKick) clearTimeout(flushKick);
+      flushKick = setTimeout(() => {
+        flushKick = undefined;
+        if (!canWrite() || backpressured || queuedFrames.length > 0) return;
+
+        // Bun can retain a burst of synchronous ServerResponse writes until a
+        // later body write arrives. Console attachment and warm history are
+        // commonly emitted in one burst, so provide a delayed SSE comment to
+        // release them instead of waiting for the 15-second heartbeat.
+        backpressured = !res.write(': flush\n\n');
+        (res as any).flush?.();
+      }, CONSOLE_SSE_FLUSH_KICK_DELAY_MS);
+      flushKick.unref?.();
+    };
+
     const flushQueuedFrames = () => {
       if (!canWrite()) return;
       backpressured = false;
+      let wroteQueuedFrame = false;
       while (queuedFrames.length > 0) {
         const next = queuedFrames.shift()!;
         queuedBytes -= next.bytes;
+        wroteQueuedFrame = true;
         backpressured = !res.write(next.frame);
         if (backpressured) break;
       }
       (res as any).flush?.();
+      if (wroteQueuedFrame && !backpressured && queuedFrames.length === 0) {
+        scheduleFlushKick();
+      }
     };
 
     const writeEvent = (event: string, payload: any) => {
@@ -231,6 +256,7 @@ export class ServerRuntimeController {
 
       backpressured = !res.write(frame);
       (res as any).flush?.();
+      if (!backpressured) scheduleFlushKick();
     };
 
     res.on('drain', flushQueuedFrames);

@@ -428,6 +428,32 @@ async function main() {
   response.emit('close');
   assert.equal(controllerUnsubscribed, 1, 'closing the SSE response did not unsubscribe its console listener');
 
+  const flushKickResponse = createSseResponse();
+  const flushKickController = new ServerRuntimeController(
+    {},
+    {},
+    { requireNodeServerPermission: async () => undefined },
+    {
+      subscribeConsole: () => () => undefined
+    }
+  );
+  await flushKickController.streamConsole(
+    'node-a',
+    'server-flush-kick',
+    { user: {} },
+    { raw: flushKickResponse.response }
+  );
+  await waitFor(
+    () => flushKickResponse.frames.includes(': flush\n\n'),
+    'console stream did not emit a delayed flush kick after its initial event burst'
+  );
+  assert.ok(
+    String(flushKickResponse.frames[0]).includes('event: agent-action'),
+    'console flush kick preceded the initial useful event'
+  );
+  flushKickResponse.response.destroyed = true;
+  flushKickResponse.response.emit('close');
+
   let permissionChecks = 0;
   let terminalControllerUnsubscribed = 0;
   const controllerListeners = [];
