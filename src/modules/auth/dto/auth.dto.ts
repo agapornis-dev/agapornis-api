@@ -19,6 +19,7 @@ export class AuthCreateDto {
 
 export class AuthInvitationCreateDto {
   label?: string;
+  email?: string;
   expiresInHours?: number;
   expires_in_hours?: number;
 }

@@ -35,6 +35,7 @@ const STATUS_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_STATUS_TIMEOUT_MS', 10_000)
 const CONSOLE_INVENTORY_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_CONSOLE_INVENTORY_TIMEOUT_MS', 5_000); // 5 sec
 const CROWDSEC_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_CROWDSEC_TIMEOUT_MS', 10_000); // 10 sec
 const CERTIFICATE_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_CERTIFICATE_TIMEOUT_MS', 300_000); // 5 min
+const LINUX_UPDATE_TIMEOUT_MS = timeoutFromEnv('AGENT_GRPC_LINUX_UPDATE_TIMEOUT_MS', 3_600_000); // 1 hour
 const MAX_FILE_UPLOAD_BYTES = new ApiConfigService().positiveInt('AGAPORNIS_MAX_FILE_UPLOAD_BYTES', 2 * 1024 * 1024 * 1024);
 
 function writeGrpcStream(call: any, message: any): Promise<void> {
@@ -218,6 +219,14 @@ export class AgentClientService {
       token,
       STATUS_TIMEOUT_MS
     );
+  }
+
+  previewLinuxUpdates(nodeId: string) {
+    return this.callServer(nodeId, 'PreviewLinuxUpdates', {}, undefined, LINUX_UPDATE_TIMEOUT_MS);
+  }
+
+  applyLinuxUpdates(nodeId: string) {
+    return this.callServer(nodeId, 'ApplyLinuxUpdates', {}, undefined, LINUX_UPDATE_TIMEOUT_MS);
   }
 
   installCertificate(nodeId: string, bundle: { cert: string; key: string; ca: string; fingerprint: string }) {

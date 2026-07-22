@@ -153,7 +153,7 @@ export class AuthController {
       if (!firstAccount && this.panelSettings.registrationRequiresInvite()) {
         validatePassword(data.password, { email: data.email, name: data.name }, this.panelSettings.passwordPolicy());
         if (this.users.findByEmail(data.email)) throw new Error('email already registered');
-        if (!await this.registrationInvites.consume(data.inviteKey)) {
+        if (!await this.registrationInvites.consume(data.inviteKey, data.email)) {
           throw new Error('invitation key is invalid or expired');
         }
       }
@@ -197,6 +197,7 @@ export class AuthController {
     const data = validateInvitationCreate(body);
     const invitation = await this.registrationInvites.create({
       label: data.label,
+      email: data.email,
       expiresInHours: data.expiresInHours,
       createdBy: req.user.id
     });

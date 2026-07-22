@@ -221,6 +221,9 @@ export class DatabaseMigrations {
     await this.ensureColumn('users', 'email_verified_at', timestamp);
     await this.ensureColumn('users', 'email_verification_pending', 'BOOLEAN NOT NULL DEFAULT FALSE');
     await this.ensureColumn('users', 'login_security', 'TEXT');
+    await this.ensureColumn('registration_invites', 'email', 'VARCHAR(255)');
+    await this.ensureColumn('registration_invites', 'used_at', timestamp);
+    await this.ensureColumn('registration_invites', 'used_by_email', 'VARCHAR(255)');
     await this.widenTokenDigestColumns();
   }
 

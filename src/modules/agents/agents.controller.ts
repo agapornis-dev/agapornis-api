@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Patch, Post, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Patch, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 import { AgentsService } from './agents.service';
 import { BootstrapTokenService } from '../bootstrap-token/bootstrap-token.service';
@@ -11,6 +11,7 @@ import { LocationsService } from '../locations/locations.service';
 import { openSseStream } from '../../common/sse/sse-stream';
 import { AgentOperationsService } from './agent-operations.service';
 import { ApplyAgentUpdateDto, RegisterAgentDto, UpdatePlacementDto } from './dto/agent.dto';
+import { ActivityLogService } from '../activity-log/activity-log.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('agents')
@@ -22,6 +23,7 @@ export class AgentsController {
     private readonly crowdSecTelemetry: CrowdSecTelemetryService,
     private readonly locations: LocationsService,
     private readonly operations: AgentOperationsService,
+    private readonly activityLog: ActivityLogService,
   ) {}
 
   @Get()
@@ -147,6 +149,26 @@ export class AgentsController {
   @Roles('admin')
   async restartForUpdate(@Param('id') id: string) {
     return this.operations.updates.restart(id);
+  }
+
+  @Get(':id/linux-updates')
+  @Roles('admin')
+  previewLinuxUpdates(@Param('id') id: string) {
+    return this.operations.linuxUpdates.preview(id);
+  }
+
+  @Post(':id/linux-updates')
+  @Roles('admin')
+  async applyLinuxUpdates(@Param('id') id: string, @Req() req: any) {
+    const result: any = await this.operations.linuxUpdates.apply(id);
+    this.activityLog.log({
+      event: 'node.linux_packages_updated', userId: req.user?.id, userName: req.user?.name,
+      nodeId: id, ip: req.ip, meta: {
+        packageCount: result.packages?.length || 0, rebootRequired: Boolean(result.reboot_required),
+        distribution: result.distribution, manager: result.manager
+      }
+    });
+    return result;
   }
 
   @Post(':id/certificate/rotate')

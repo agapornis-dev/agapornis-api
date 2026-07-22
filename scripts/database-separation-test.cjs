@@ -61,6 +61,10 @@ async function main() {
     'existing registration invite hashes must be widened for SHA3-512');
   assert.ok(upgradeSql.some(sql => /ALTER TABLE password_reset_tokens ALTER COLUMN token_hash TYPE VARCHAR\(128\)/i.test(sql)),
     'existing password reset hashes must be widened for SHA3-512');
+  for (const column of ['email', 'used_at', 'used_by_email']) {
+    assert.ok(upgradeSql.some(sql => new RegExp(`ALTER TABLE registration_invites ADD COLUMN IF NOT EXISTS ${column}`, 'i').test(sql)),
+      `existing registration_invites tables must add ${column}`);
+  }
 
   // Test relational round-trip: replace and load should produce domain objects from columns
   const statements = [];

@@ -42,6 +42,14 @@ export function emailField(body: RequestObject, name = 'email') {
   return email;
 }
 
+export function optionalEmailField(body: RequestObject, name = 'email') {
+  const email = stringField(body, name, { max: 255 }).toLowerCase();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new BadRequestException(`${name} must be a valid email address`);
+  }
+  return email;
+}
+
 export function numberField(
   body: RequestObject,
   name: string,

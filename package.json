@@ -29,6 +29,7 @@
     "test:http-security": "node scripts/http-security-test.cjs",
     "test:api-security-audit": "node scripts/api-security-audit-test.cjs",
     "test:security-upgrade": "node scripts/security-upgrade-test.cjs",
+    "test:registration-invites": "node scripts/registration-invites-test.cjs",
     "test:two-factor-rate-limit": "node scripts/two-factor-rate-limit-test.cjs",
     "test:role-policy": "node scripts/role-policy-test.cjs",
     "test:settings-policy": "node scripts/settings-policy-test.cjs",

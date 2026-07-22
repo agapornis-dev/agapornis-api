@@ -15,10 +15,12 @@ import { SystemUpdateModule } from '../system-updates/system-update.module';
 import { AgentUpdateService } from './agent-update.service';
 import { CertificateService } from './certificate.service';
 import { AgentOperationsService } from './agent-operations.service';
+import { LinuxUpdateService } from './linux-update.service';
+import { ActivityLogModule } from '../activity-log/activity-log.module';
 
 @Module({
-  imports: [AuthModule, UsersModule, DatabaseModule, BootstrapTokenModule, LocationsModule, SystemUpdateModule],
-  providers: [AgentsService, AgentConnectionService, AgentClientService, NodeStatsService, CertificateRotationService, CertificateService, AgentUpdateService, AgentOperationsService, CrowdSecTelemetryService],
+  imports: [AuthModule, UsersModule, DatabaseModule, BootstrapTokenModule, LocationsModule, SystemUpdateModule, ActivityLogModule],
+  providers: [AgentsService, AgentConnectionService, AgentClientService, NodeStatsService, CertificateRotationService, CertificateService, AgentUpdateService, LinuxUpdateService, AgentOperationsService, CrowdSecTelemetryService],
   controllers: [AgentsController],
   exports: [AgentsService, AgentClientService, NodeStatsService, CrowdSecTelemetryService, AgentOperationsService]
 })
